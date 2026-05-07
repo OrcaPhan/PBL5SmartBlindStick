@@ -1,0 +1,17 @@
+# Project Context
+Dự án này là Backend Server cho hệ thống Gậy Thông Minh (IoT + AI), nhận dữ liệu định vị từ phần cứng và gửi cảnh báo lên app.
+
+# Tech Stack & Architecture
+- Ngôn ngữ: Python 3.10+
+- Framework: FastAPI
+- Database: PostgreSQL
+- ORM: SQLAlchemy (Sử dụng Async mode nếu có thể, hoặc Sync cơ bản)
+- Cấu trúc: Bắt buộc tuân thủ mô hình 3-Layer Architecture (Controllers -> Services -> Repositories).
+
+# Coding Rules (Vibe Code)
+1. LUÔN LUÔN tạo Pydantic schemas (trong thư mục schemas/) cho việc nhận/trả request, không dùng dict thô.
+2. Logic nghiệp vụ (tính toán, xử lý AI, kiểm tra điều kiện) CHỈ được nằm ở tầng `services/`.
+3. Tầng `controllers/` (Routers) chỉ làm nhiệm vụ nhận request, gọi service và trả response.
+4. Viết comment và docstring bằng tiếng Việt rõ ràng, dễ hiểu.
+5. Code cần có error handling (try/except) và raise HTTPException hợp lý.
+6. Tên biến dùng `snake_case`, tên Class dùng `PascalCase`.

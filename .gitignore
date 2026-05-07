@@ -1,0 +1,30 @@
+weights/
+
+hientai.txt
+
+# AI model
+*.pth
+*.pt
+*.onnx
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Build
+build/
+dist/
+
+# IDE
+.vscode/
+.idea/
+
+# Dataset
+dataset/
+
+# Logs
+*.log
+
+# MinIO temp
+tmp/
