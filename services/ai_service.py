@@ -19,7 +19,7 @@ from repositories.detection_repo import insert_detection_log
 
 CONFIDENCE_THRESHOLD = 30.0
 SPAM_GAP_SECONDS = 3
-ALERT_TOPIC = "smartstick/alert"
+ALERT_TOPIC_TEMPLATE = "pbl5/smart_cane/{stick_id}/command"
 
 _last_detection_by_stick: dict[str, dict[str, str | datetime]] = {}
 logger = logging.getLogger(__name__)
@@ -50,6 +50,19 @@ def _should_send_alert(stick_id: str, object_name: str, now: datetime) -> bool:
         return True
 
     return (now - last_time) > timedelta(seconds=SPAM_GAP_SECONDS)
+
+
+def _build_alert_topic(stick_id: str) -> str:
+    """Tạo topic MQTT riêng cho từng gậy để tránh gửi nhầm thiết bị."""
+    return ALERT_TOPIC_TEMPLATE.format(stick_id=stick_id)
+
+
+def _map_class_to_audio_file(class_index: int) -> int:
+    """
+    Map class_index từ AI sang số file MP3.
+    Mặc định dùng index + 1 để khớp cách đánh số file của DFPlayer (001, 002...).
+    """
+    return max(1, class_index + 1)
 
 
 async def process_camera_frame(
@@ -98,15 +111,11 @@ async def process_camera_frame(
 
     try:
         # Bước 1: Gửi MQTT trước để cảnh báo ngay lập tức.
+        alert_topic = _build_alert_topic(stick_id=stick_id)
+        file_number = _map_class_to_audio_file(class_index=class_index)
         mqtt_client.publish_command(
-            topic=ALERT_TOPIC,
-            message={
-                "stick_id": stick_id,
-                "object_name": class_name,
-                "confidence": confidence,
-                "class_index": class_index,
-                "action": "play_warning_sound",
-            },
+            topic=alert_topic,
+            message=str(file_number),
         )
 
         # Bước 2: Upload MinIO, lấy URL public của ảnh.

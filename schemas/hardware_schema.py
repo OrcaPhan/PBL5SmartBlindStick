@@ -27,3 +27,36 @@ class HardwareGpsOut(BaseModel):
     timestamp: datetime | None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class CurrentLocationOut(BaseModel):
+    """Schema vi tri hien tai de app cap nhat lien tuc theo tung gay."""
+
+    stick_id: str
+    lat: float
+    lon: float
+    battery: int
+    timestamp: datetime | None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RoutePointOut(BaseModel):
+    """Schema 1 diem trong lo trinh di chuyen."""
+
+    lat: float
+    lon: float
+    battery: int
+    timestamp: datetime | None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SessionRouteOut(BaseModel):
+    """Schema danh sach lo trinh theo buoi de app hien thi lich su."""
+
+    stick_id: str
+    session_start: datetime
+    session_end: datetime
+    total_points: int
+    points: list[RoutePointOut]

@@ -2,12 +2,23 @@
 Router cho các API phần cứng.
 """
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
-from schemas.hardware_schema import HardwareGpsIn, HardwareGpsOut
-from services.tracking_service import receive_gps_data
+from schemas.hardware_schema import (
+    CurrentLocationOut,
+    HardwareGpsIn,
+    HardwareGpsOut,
+    SessionRouteOut,
+)
+from services.tracking_service import (
+    get_current_location,
+    get_route_by_session,
+    receive_gps_data,
+)
 
 router = APIRouter(prefix="/api/hardware", tags=["Hardware"])
 
@@ -33,4 +44,60 @@ async def ingest_gps_data(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Khong the xu ly du lieu GPS tu phan cung.",
+        ) from exc
+
+
+@router.get(
+    "/{stick_id}/current-location",
+    response_model=CurrentLocationOut,
+    status_code=status.HTTP_200_OK,
+)
+async def fetch_current_location(
+    stick_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> CurrentLocationOut:
+    """
+    API cho app lay vi tri hien tai cua stick (goi lap de cap nhat lien tuc).
+    """
+    try:
+        location = await get_current_location(db=db, stick_id=stick_id)
+        return CurrentLocationOut.model_validate(location)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Khong the lay vi tri hien tai.",
+        ) from exc
+
+
+@router.get(
+    "/{stick_id}/session-route",
+    response_model=SessionRouteOut,
+    status_code=status.HTTP_200_OK,
+)
+async def fetch_session_route(
+    stick_id: str,
+    session_start: datetime,
+    session_end: datetime,
+    limit: int = 1000,
+    db: AsyncSession = Depends(get_db),
+) -> SessionRouteOut:
+    """
+    API cho app lay lo trinh di chuyen theo 1 buoi (khoang thoi gian).
+    """
+    try:
+        return await get_route_by_session(
+            db=db,
+            stick_id=stick_id,
+            session_start=session_start,
+            session_end=session_end,
+            limit=limit,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Khong the lay lo trinh theo buoi.",
         ) from exc
