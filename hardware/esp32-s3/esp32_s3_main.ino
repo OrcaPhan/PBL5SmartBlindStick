@@ -12,16 +12,16 @@ const char* STICK_ID = "STK001";
 // =========================
 // Cau hinh WiFi + API
 // =========================
-const char* WIFI_SSID = "YOUR_WIFI_SSID";
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
-const char* GPS_API_URL = "http://SERVER_IP:8000/api/hardware/gps";
+const char* WIFI_SSID = "KTKH P208 C";
+const char* WIFI_PASSWORD = "DUTITF2005";
+const char* GPS_API_URL = "http://192.168.1.4:8000/api/hardware/gps";
 
 // =========================
 // Cau hinh MQTT
 // =========================
 const char* MQTT_BROKER = "broker.hivemq.com";
 const uint16_t MQTT_PORT = 1883;
-const char* MQTT_TOPIC_COMMAND = "pbl5/smart_cane/STK001/command";
+String mqtt_topic_command; // Sẽ khởi tạo topic động dựa theo STICK_ID
 
 // =========================
 // Cau hinh UART
@@ -29,8 +29,8 @@ const char* MQTT_TOPIC_COMMAND = "pbl5/smart_cane/STK001/command";
 // Dieu chinh lai theo dung chan dau noi thuc te cua ban mach.
 constexpr int GPS_RX_PIN = 16;
 constexpr int GPS_TX_PIN = 17;
-constexpr int DFP_RX_PIN = 18;
-constexpr int DFP_TX_PIN = 19;
+constexpr int DFP_RX_PIN = 20;
+constexpr int DFP_TX_PIN = 21;
 
 // =========================
 // Khoi tao doi tuong
@@ -95,10 +95,8 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
-  if (!myDFPlayer.play(file_number)) {
-    Serial.println("Loi khi yeu cau DFPlayer phat file.");
-    return;
-  }
+  myDFPlayer.play(file_number);
+  // DFPlayer play() trả về void nên không cần check return value
 
   last_audio_play_ms = now;
   Serial.print("Dang phat file MP3 so: ");
@@ -129,9 +127,11 @@ void ensure_mqtt_connection() {
 
   if (mqtt_client.connect(client_id.c_str())) {
     Serial.println("MQTT da ket noi.");
-    if (mqtt_client.subscribe(MQTT_TOPIC_COMMAND)) {
+    
+    mqtt_topic_command = String("pbl5/smart_cane/") + STICK_ID + "/command";
+    if (mqtt_client.subscribe(mqtt_topic_command.c_str())) {
       Serial.print("Da subscribe topic: ");
-      Serial.println(MQTT_TOPIC_COMMAND);
+      Serial.println(mqtt_topic_command);
     } else {
       Serial.println("Subscribe topic that bai.");
     }
@@ -201,7 +201,7 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
 
-  gpsSerial.begin(9600, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+  // gpsSerial.begin(9600, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN); // Tạm thời comment do chưa dùng GPS
   dfSerial.begin(9600, SERIAL_8N1, DFP_RX_PIN, DFP_TX_PIN);
 
   if (!myDFPlayer.begin(dfSerial)) {
@@ -209,6 +209,8 @@ void setup() {
   } else {
     myDFPlayer.volume(25);
     Serial.println("DFPlayer da san sang.");
+    Serial.println("Phat am thanh khoi dong...");
+    myDFPlayer.playMp3Folder(9999);
   }
 
   setup_wifi();
@@ -222,5 +224,7 @@ void loop() {
 
   ensure_mqtt_connection();
   mqtt_client.loop();
-  read_and_send_gps();
+  
+  // Tạm thời comment do chưa lắp mạch GPS
+  // read_and_send_gps();
 }

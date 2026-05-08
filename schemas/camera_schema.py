@@ -12,3 +12,10 @@ class CameraUploadOut(BaseModel):
     class_name: str
     confidence: float
     image_url: str | None = None
+
+
+class CameraToggleIn(BaseModel):
+    """Schema cho API bật/tắt camera từ web."""
+    
+    stick_id: str
+    action: str  # "on" hoặc "off"

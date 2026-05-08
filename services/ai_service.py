@@ -22,6 +22,7 @@ SPAM_GAP_SECONDS = 3
 ALERT_TOPIC_TEMPLATE = "pbl5/smart_cane/{stick_id}/command"
 
 _last_detection_by_stick: dict[str, dict[str, str | datetime]] = {}
+_latest_ai_results: dict[str, dict] = {}  # Lưu kết quả nhận diện mới nhất cho API polling
 logger = logging.getLogger(__name__)
 
 
@@ -65,6 +66,11 @@ def _map_class_to_audio_file(class_index: int) -> int:
     return max(1, class_index + 1)
 
 
+def get_latest_ai_result(stick_id: str) -> dict | None:
+    """Trả về kết quả nhận diện gần nhất của gậy."""
+    return _latest_ai_results.get(stick_id)
+
+
 async def process_camera_frame(
     db: AsyncSession,
     image_bytes: bytes,
@@ -93,6 +99,13 @@ async def process_camera_frame(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Khong the suy luan AI tu anh camera.",
         ) from exc
+        
+    # Lưu lại kết quả nhận diện để frontend có thể gọi API lấy hiển thị real-time
+    _latest_ai_results[stick_id] = {
+        "class_name": class_name,
+        "confidence": confidence,
+        "updated_at": datetime.now().isoformat(),
+    }
 
     if confidence < CONFIDENCE_THRESHOLD:
         return {
