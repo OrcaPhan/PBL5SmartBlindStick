@@ -7,8 +7,11 @@ from __future__ import annotations
 import json
 import os
 from typing import Any
+from dotenv import load_dotenv
 
 import paho.mqtt.client as mqtt
+
+load_dotenv()
 
 
 class MqttClient:

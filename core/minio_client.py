@@ -7,9 +7,12 @@ from __future__ import annotations
 import io
 import json
 import os
+from dotenv import load_dotenv
 
 from minio import Minio
 from minio.error import S3Error
+
+load_dotenv()
 
 
 class MinioClient:

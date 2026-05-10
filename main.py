@@ -3,6 +3,7 @@
 """
 
 import logging
+from dotenv import load_dotenv
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,9 +12,13 @@ from controllers.auth_router import router as auth_router
 from controllers.camera_router import router as camera_router
 from controllers.hardware_router import router as hardware_router
 from controllers.user_router import router as user_router
+from controllers.history_router import router as history_router
 from core.ai_model import preload_ai_model
 from core.database import close_db, init_db
 from core.mqtt_client import mqtt_client
+
+# Nạp các biến môi trường từ file .env
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +39,7 @@ app.include_router(auth_router)
 app.include_router(hardware_router)
 app.include_router(camera_router)
 app.include_router(user_router)
-
+app.include_router(history_router)
 
 @app.on_event("startup")
 async def on_startup() -> None:
