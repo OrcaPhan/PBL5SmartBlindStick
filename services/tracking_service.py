@@ -83,6 +83,12 @@ async def get_route_by_session(
             detail="limit phai trong khoang 1..5000.",
         )
 
+    # Convert aware datetimes to naive since SQLAlchemy column is DateTime without timezone
+    if session_start.tzinfo is not None:
+        session_start = session_start.replace(tzinfo=None)
+    if session_end.tzinfo is not None:
+        session_end = session_end.replace(tzinfo=None)
+
     try:
         points = await get_location_history_by_session(
             db=db,

@@ -88,6 +88,14 @@ bool init_camera() {
     Serial.printf("Khoi tao camera that bai, ma loi: 0x%x\n", err);
     return false;
   }
+  sensor_t * s = esp_camera_sensor_get();
+
+  // Lat doc
+  s->set_vflip(s, 1);
+
+  // Lat ngang
+  s->set_hmirror(s, 1);
+
   return true;
 }
 

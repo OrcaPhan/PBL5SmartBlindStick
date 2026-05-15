@@ -1,5 +1,4 @@
 #include <WiFi.h>
-#include <HTTPClient.h>
 #include <PubSubClient.h>
 #include <TinyGPS++.h>
 #include <DFRobotDFPlayerMini.h>
@@ -7,26 +6,36 @@
 // =========================
 // Cau hinh dinh danh thiet bi
 // =========================
-const char* STICK_ID = "STK001";
+const char* STICK_ID = "STK002";
 
 // =========================
-// Cau hinh WiFi + API
+// Cau hinh WiFi
 // =========================
-const char* WIFI_SSID = "KTKH P208 C";
+const char* WIFI_SSID     = "KTKH P208 C";
 const char* WIFI_PASSWORD = "DUTITF2005";
-const char* GPS_API_URL = "http://192.168.1.4:8000/api/hardware/gps";
 
 // =========================
-// Cau hinh MQTT
+// Cau hinh MQTT Broker
 // =========================
-const char* MQTT_BROKER = "broker.hivemq.com";
-const uint16_t MQTT_PORT = 1883;
-String mqtt_topic_command; // Sẽ khởi tạo topic động dựa theo STICK_ID
+const char* MQTT_BROKER   = "broker.hivemq.com";
+const uint16_t MQTT_PORT  = 1883;
+
+// ── Topic quy hoach chung (pbl5/smart_cane/{stick_id}/<chuc_nang>) ──
+// ESP32 PUBLISH len:
+//   pbl5/smart_cane/STK002/gps      → vi tri GPS + pin
+//   pbl5/smart_cane/STK002/status   → heartbeat online/offline
+// ESP32 SUBSCRIBE (nhan ve):
+//   pbl5/smart_cane/STK002/command  → phat am thanh (so file MP3)
+//   pbl5/smart_cane/STK002/alert    → canh bao khan cap tu caretaker
+
+String TOPIC_PUB_GPS;      // pbl5/smart_cane/{id}/gps
+String TOPIC_PUB_STATUS;   // pbl5/smart_cane/{id}/status
+String TOPIC_SUB_COMMAND;  // pbl5/smart_cane/{id}/command
+String TOPIC_SUB_ALERT;    // pbl5/smart_cane/{id}/alert
 
 // =========================
 // Cau hinh UART
 // =========================
-// Dieu chinh lai theo dung chan dau noi thuc te cua ban mach.
 constexpr int GPS_RX_PIN = 16;
 constexpr int GPS_TX_PIN = 17;
 constexpr int DFP_RX_PIN = 20;
@@ -46,177 +55,199 @@ PubSubClient mqtt_client(wifi_client);
 // =========================
 // Bien trang thai
 // =========================
-unsigned long last_gps_send_ms = 0;
+unsigned long last_gps_send_ms   = 0;
 unsigned long last_audio_play_ms = 0;
 unsigned long last_mqtt_retry_ms = 0;
 
-constexpr unsigned long GPS_SEND_INTERVAL_MS = 5000;
-constexpr unsigned long AUDIO_SPAM_GUARD_MS = 2000;
+constexpr unsigned long GPS_SEND_INTERVAL_MS   = 5000;  // Gui GPS moi 5 giay
+constexpr unsigned long AUDIO_SPAM_GUARD_MS    = 2000;
 constexpr unsigned long MQTT_RETRY_INTERVAL_MS = 3000;
 
+// =========================
+// WiFi
+// =========================
 void setup_wifi() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.print("Dang ket noi WiFi");
-
+  Serial.print("[WiFi] Dang ket noi");
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
-
   Serial.println();
-  Serial.print("WiFi da ket noi. IP: ");
+  Serial.print("[WiFi] Da ket noi. IP: ");
   Serial.println(WiFi.localIP());
 }
 
+// =========================
+// MQTT Callback (nhan lenh tu server)
+// =========================
 void mqtt_callback(char* topic, byte* payload, unsigned int length) {
   String message;
   message.reserve(length);
-
   for (unsigned int i = 0; i < length; i++) {
     message += static_cast<char>(payload[i]);
   }
   message.trim();
 
-  Serial.print("Nhan MQTT topic ");
+  Serial.print("[MQTT] Nhan topic '");
   Serial.print(topic);
-  Serial.print(": ");
+  Serial.print("': ");
   Serial.println(message);
 
-  const unsigned long now = millis();
-  if (now - last_audio_play_ms < AUDIO_SPAM_GUARD_MS) {
-    Serial.println("Bo qua lenh play do dang trong cua so chong spam.");
-    return;
+  String topic_str = String(topic);
+
+  // ── Xu ly lenh phat am thanh ──────────────────────────
+  if (topic_str == TOPIC_SUB_COMMAND) {
+    const unsigned long now = millis();
+    if (now - last_audio_play_ms < AUDIO_SPAM_GUARD_MS) {
+      Serial.println("[MQTT] Bo qua do chong spam am thanh.");
+      return;
+    }
+    const int file_number = message.toInt();
+    if (file_number <= 0) {
+      Serial.println("[MQTT] So file khong hop le.");
+      return;
+    }
+    myDFPlayer.play(file_number);
+    last_audio_play_ms = now;
+    Serial.print("[Audio] Dang phat file MP3 so: ");
+    Serial.println(file_number);
   }
 
-  const int file_number = message.toInt();
-  if (file_number <= 0) {
-    Serial.println("Message khong hop le, khong the play file.");
-    return;
+  // ── Xu ly canh bao khan cap ───────────────────────────
+  else if (topic_str == TOPIC_SUB_ALERT) {
+    Serial.print("[Alert] Nhan canh bao: ");
+    Serial.println(message);
+    // Phat am thanh canh bao (file so 1 quy uoc la "canh bao.mp3")
+    myDFPlayer.play(1);
   }
-
-  myDFPlayer.play(file_number);
-  // DFPlayer play() trả về void nên không cần check return value
-
-  last_audio_play_ms = now;
-  Serial.print("Dang phat file MP3 so: ");
-  Serial.println(file_number);
 }
 
+// =========================
+// MQTT connect + subscribe
+// =========================
 void setup_mqtt() {
+  // Khoi tao cac topic dua tren STICK_ID
+  TOPIC_PUB_GPS     = String("pbl5/smart_cane/") + STICK_ID + "/gps";
+  TOPIC_PUB_STATUS  = String("pbl5/smart_cane/") + STICK_ID + "/status";
+  TOPIC_SUB_COMMAND = String("pbl5/smart_cane/") + STICK_ID + "/command";
+  TOPIC_SUB_ALERT   = String("pbl5/smart_cane/") + STICK_ID + "/alert";
+
   mqtt_client.setServer(MQTT_BROKER, MQTT_PORT);
   mqtt_client.setCallback(mqtt_callback);
 }
 
 void ensure_mqtt_connection() {
-  if (mqtt_client.connected()) {
-    return;
-  }
+  if (mqtt_client.connected()) return;
 
   const unsigned long now = millis();
-  if (now - last_mqtt_retry_ms < MQTT_RETRY_INTERVAL_MS) {
-    return;
-  }
+  if (now - last_mqtt_retry_ms < MQTT_RETRY_INTERVAL_MS) return;
   last_mqtt_retry_ms = now;
 
-  String client_id = "esp32s3-";
-  client_id += STICK_ID;
-
-  Serial.print("Dang ket noi MQTT voi client_id: ");
+  String client_id = String("pbl5-esp32s3-") + STICK_ID;
+  Serial.print("[MQTT] Dang ket noi broker, client_id: ");
   Serial.println(client_id);
 
-  if (mqtt_client.connect(client_id.c_str())) {
-    Serial.println("MQTT da ket noi.");
-    
-    mqtt_topic_command = String("pbl5/smart_cane/") + STICK_ID + "/command";
-    if (mqtt_client.subscribe(mqtt_topic_command.c_str())) {
-      Serial.print("Da subscribe topic: ");
-      Serial.println(mqtt_topic_command);
-    } else {
-      Serial.println("Subscribe topic that bai.");
-    }
+  // Last-will message: thong bao offline khi mat ket noi dot ngot
+  String will_topic  = TOPIC_PUB_STATUS;
+  String will_payload = String("{\"stick_id\":\"") + STICK_ID + "\",\"status\":\"offline\"}";
+
+  if (mqtt_client.connect(
+        client_id.c_str(),
+        nullptr, nullptr,       // username, password
+        will_topic.c_str(),     // will topic
+        0,                      // will QoS
+        true,                   // will retain
+        will_payload.c_str()    // will message
+      )) {
+    Serial.println("[MQTT] Ket noi thanh cong!");
+
+    // Subscribe cac topic nhan lenh
+    mqtt_client.subscribe(TOPIC_SUB_COMMAND.c_str());
+    mqtt_client.subscribe(TOPIC_SUB_ALERT.c_str());
+    Serial.println("[MQTT] Da subscribe: " + TOPIC_SUB_COMMAND);
+    Serial.println("[MQTT] Da subscribe: " + TOPIC_SUB_ALERT);
+
+    // Publish online status
+    String online_payload = String("{\"stick_id\":\"") + STICK_ID + "\",\"status\":\"online\"}";
+    mqtt_client.publish(TOPIC_PUB_STATUS.c_str(), online_payload.c_str(), true); // retain=true
+    Serial.println("[MQTT] Published status: online");
   } else {
-    Serial.print("Ket noi MQTT that bai, rc=");
+    Serial.print("[MQTT] Ket noi that bai, rc=");
     Serial.println(mqtt_client.state());
   }
 }
 
+// =========================
+// GPS: doc va publish qua MQTT
+// =========================
 void read_and_send_gps() {
+  // Doc du lieu tu module GPS
   while (gpsSerial.available() > 0) {
     gps.encode(gpsSerial.read());
   }
 
   const unsigned long now = millis();
-  if (now - last_gps_send_ms < GPS_SEND_INTERVAL_MS) {
-    return;
-  }
+  if (now - last_gps_send_ms < GPS_SEND_INTERVAL_MS) return;
   last_gps_send_ms = now;
 
   if (!gps.location.isValid()) {
-    Serial.println("GPS chua co toa do hop le, bo qua lan gui nay.");
+    Serial.println("[GPS] Chua co tin hieu hop le, bo qua.");
     return;
   }
 
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi dang mat ket noi, chua the gui GPS.");
+  if (!mqtt_client.connected()) {
+    Serial.println("[GPS] MQTT chua ket noi, bo qua lan gui nay.");
     return;
   }
 
-  const double lat = gps.location.lat();
-  const double lon = gps.location.lng();
-  const int battery = 85;
+  const double lat    = gps.location.lat();
+  const double lon    = gps.location.lng();
+  const int    battery = 85; // TODO: doc tu ADC thuc te
 
-  // Luon gui dung stick_id de backend phan biet dung tung cay gay.
-  String json_payload = "{\"stick_id\":\"";
-  json_payload += STICK_ID;
-  json_payload += "\",\"lat\":";
-  json_payload += String(lat, 6);
-  json_payload += ",\"lon\":";
-  json_payload += String(lon, 6);
-  json_payload += ",\"battery\":";
-  json_payload += battery;
-  json_payload += "}";
+  // Dong goi JSON publish len topic GPS
+  String payload = String("{\"stick_id\":\"") + STICK_ID
+    + "\",\"lat\":"      + String(lat, 6)
+    + ",\"lon\":"        + String(lon, 6)
+    + ",\"battery\":"    + battery
+    + "}";
 
-  HTTPClient http;
-  http.begin(GPS_API_URL);
-  http.addHeader("Content-Type", "application/json");
-
-  Serial.print("POST GPS payload: ");
-  Serial.println(json_payload);
-
-  const int http_code = http.POST(json_payload);
-  if (http_code > 0) {
-    Serial.print("HTTP code: ");
-    Serial.println(http_code);
-    Serial.print("HTTP response: ");
-    Serial.println(http.getString());
+  if (mqtt_client.publish(TOPIC_PUB_GPS.c_str(), payload.c_str())) {
+    Serial.print("[GPS] Published -> ");
+    Serial.print(TOPIC_PUB_GPS);
+    Serial.print(" | ");
+    Serial.println(payload);
   } else {
-    Serial.print("Gui GPS that bai, loi: ");
-    Serial.println(http.errorToString(http_code));
+    Serial.println("[GPS] Publish GPS that bai!");
   }
-  http.end();
 }
 
+// =========================
+// Setup
+// =========================
 void setup() {
   Serial.begin(115200);
   delay(1000);
 
-  // gpsSerial.begin(9600, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN); // Tạm thời comment do chưa dùng GPS
-  dfSerial.begin(9600, SERIAL_8N1, DFP_RX_PIN, DFP_TX_PIN);
+  gpsSerial.begin(9600, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+  dfSerial.begin(9600,  SERIAL_8N1, DFP_RX_PIN, DFP_TX_PIN);
 
   if (!myDFPlayer.begin(dfSerial)) {
-    Serial.println("Khoi tao DFPlayer that bai. Kiem tra day noi va the nho.");
+    Serial.println("[DFPlayer] Khoi tao that bai. Kiem tra day noi.");
   } else {
     myDFPlayer.volume(25);
-    Serial.println("DFPlayer da san sang.");
-    Serial.println("Phat am thanh khoi dong...");
-    myDFPlayer.playMp3Folder(9999);
+    Serial.println("[DFPlayer] San sang.");
+    myDFPlayer.playMp3Folder(9999); // Am thanh khoi dong
   }
 
   setup_wifi();
   setup_mqtt();
 }
 
+// =========================
+// Loop
+// =========================
 void loop() {
   if (WiFi.status() != WL_CONNECTED) {
     setup_wifi();
@@ -224,7 +255,5 @@ void loop() {
 
   ensure_mqtt_connection();
   mqtt_client.loop();
-  
-  // Tạm thời comment do chưa lắp mạch GPS
-  // read_and_send_gps();
+  read_and_send_gps();
 }
