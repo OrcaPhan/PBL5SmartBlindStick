@@ -104,5 +104,31 @@ class MinioClient:
 
         return f"{base_url}/{self.bucket_name}/{file_name}"
 
+    def get_full_url(self, relative_path: str) -> str:
+        """
+        Chuyển đổi đường dẫn tương đối (hoặc object name) thành URL đầy đủ dựa trên cấu hình hiện tại.
+        Hỗ trợ tương thích ngược nếu relative_path đã là một URL đầy đủ.
+        """
+        if not relative_path:
+            return ""
+        
+        # Nếu đường dẫn đã là URL đầy đủ (ví dụ dữ liệu cũ), trả về luôn
+        if relative_path.startswith("http://") or relative_path.startswith("https://"):
+            return relative_path
+
+        scheme = "https" if self.secure else "http"
+        endpoint = self.public_endpoint
+        if endpoint.startswith("http://") or endpoint.startswith("https://"):
+            base_url = endpoint.rstrip("/")
+        else:
+            base_url = f"{scheme}://{endpoint.rstrip('/')}"
+
+        # Nếu relative_path đã bắt đầu bằng bucket_name, ta chỉ ghép với base_url
+        if relative_path.startswith(f"{self.bucket_name}/"):
+            return f"{base_url}/{relative_path}"
+        
+        # Ngược lại nếu chỉ là object_name, ghép cả bucket_name vào
+        return f"{base_url}/{self.bucket_name}/{relative_path}"
+
 
 minio_client = MinioClient()

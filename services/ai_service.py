@@ -17,7 +17,7 @@ from core.minio_client import minio_client
 from core.mqtt_client import mqtt_client
 from repositories.detection_repo import insert_detection_log
 
-CONFIDENCE_THRESHOLD = 30.0
+CONFIDENCE_THRESHOLD = 50.0
 SPAM_GAP_SECONDS = 3
 ALERT_TOPIC_TEMPLATE = "pbl5/smart_cane/{stick_id}/command"
 
@@ -131,17 +131,17 @@ async def process_camera_frame(
             message=str(file_number),
         )
 
-        # Bước 2: Upload MinIO, lấy URL public của ảnh.
+        # Bước 2: Upload MinIO.
         file_name = _build_image_object_name(stick_id=stick_id)
-        image_url = minio_client.upload_image(file_bytes=image_bytes, file_name=file_name)
+        minio_client.upload_image(file_bytes=image_bytes, file_name=file_name)
 
-        # Bước 3: Lưu DB với image_url vừa tạo.
+        # Bước 3: Lưu DB với relative path (file_name) vừa tạo.
         await insert_detection_log(
             db=db,
             stick_id=stick_id,
             object_name=class_name,
             confidence=confidence,
-            image_url=image_url,
+            image_url=file_name,
         )
     except HTTPException:
         raise
@@ -167,5 +167,5 @@ async def process_camera_frame(
         "message": "Obstacle detected and processed",
         "class_name": class_name,
         "confidence": confidence,
-        "image_url": image_url,
+        "image_url": file_name,
     }
