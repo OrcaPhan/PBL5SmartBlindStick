@@ -109,6 +109,74 @@ async def fetch_session_route(
         ) from exc
 
 
+@router.post(
+    "/{stick_id}/calibrate",
+    status_code=status.HTTP_200_OK,
+)
+async def calibrate_stick_imu(
+    stick_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    API hiệu chuẩn thiết bị IMU.
+    Khi người dùng giữ gậy đứng thẳng, gọi API này sẽ lưu góc lệch hiện tại (Pitch, Roll) làm mốc 0.
+    """
+    from models.imu_log import IMULog
+    from models.stick import Stick
+    from sqlalchemy import select
+    import math
+
+    # 1. Kiểm tra xem stick có tồn tại không
+    stmt_stick = select(Stick).where(Stick.stick_id == stick_id)
+    res_stick = await db.execute(stmt_stick)
+    stick = res_stick.scalar_one_or_none()
+    if not stick:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy thiết bị gậy với ID đã cung cấp.",
+        )
+
+    # 2. Lấy bản ghi IMU gần nhất của gậy này
+    stmt_imu = (
+        select(IMULog)
+        .where(IMULog.stick_id == stick_id)
+        .order_by(IMULog.timestamp.desc(), IMULog.id.desc())
+        .limit(1)
+    )
+    res_imu = await db.execute(stmt_imu)
+    latest_imu = res_imu.scalar_one_or_none()
+    if not latest_imu:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Chưa có dữ liệu IMU từ thiết bị này để thực hiện hiệu chuẩn.",
+        )
+
+    # 3. Tính toán góc Pitch và Roll hiện tại để làm góc lệch (Offset)
+    ax = latest_imu.acc_x or 0.0
+    ay = latest_imu.acc_y or 0.0
+    az = latest_imu.acc_z or 0.0
+
+    raw_pitch = math.atan2(ay, math.sqrt(ax**2 + az**2)) * (180.0 / math.pi)
+    raw_roll = math.atan2(-ax, az) * (180.0 / math.pi)
+
+    # 4. Lưu lại góc lệch vào bảng sticks
+    stick.imu_offset_pitch = raw_pitch
+    stick.imu_offset_roll = raw_roll
+
+    await db.commit()
+    await db.refresh(stick)
+
+    return {
+        "status": "success",
+        "message": "Hiệu chuẩn thành công. Đã thiết lập góc lệch mốc 0.",
+        "stick_id": stick_id,
+        "offsets": {
+            "pitch": round(raw_pitch, 2),
+            "roll": round(raw_roll, 2)
+        }
+    }
+
+
 @router.websocket("/ws/{stick_id}")
 async def websocket_location_endpoint(websocket: WebSocket, stick_id: str):
     """
