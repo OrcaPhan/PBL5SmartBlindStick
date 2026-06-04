@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 # ── Pattern topic nhận từ thiết bị ──────────────────────────────────────────
 TOPIC_GPS_WILDCARD    = "pbl5/smart_cane/+/gps"
 TOPIC_STATUS_WILDCARD = "pbl5/smart_cane/+/status"
+TOPIC_IMU_WILDCARD    = "pbl5/smart_cane/+/imu"
 
 
 def _build_topic(stick_id: str, channel: str) -> str:
@@ -88,8 +89,10 @@ class MqttClient:
             # Subscribe nhận dữ liệu từ tất cả thiết bị
             client.subscribe(TOPIC_GPS_WILDCARD,    qos=0)
             client.subscribe(TOPIC_STATUS_WILDCARD, qos=0)
+            client.subscribe(TOPIC_IMU_WILDCARD,    qos=0)
             logger.info("[MQTT] Subscribed: %s", TOPIC_GPS_WILDCARD)
             logger.info("[MQTT] Subscribed: %s", TOPIC_STATUS_WILDCARD)
+            logger.info("[MQTT] Subscribed: %s", TOPIC_IMU_WILDCARD)
         else:
             logger.error("[MQTT] Ket noi that bai, rc=%s", rc)
 
@@ -110,6 +113,10 @@ class MqttClient:
         # ── Xử lý Status ─────────────────────────────────────────────────────
         elif topic.endswith("/status"):
             self._handle_status(payload)
+
+        # ── Xử lý IMU ────────────────────────────────────────────────────────
+        elif topic.endswith("/imu"):
+            self._handle_imu(payload)
 
     def _handle_gps(self, payload: str) -> None:
         """Lưu GPS vào DB và broadcast WebSocket."""
@@ -167,6 +174,59 @@ class MqttClient:
                 "battery":  battery,
                 "timestamp": str(location.timestamp),
             })
+
+    def _handle_imu(self, payload: str) -> None:
+        """Lưu dữ liệu IMU (gia tốc/góc nghiêng) vào DB."""
+        try:
+            data = json.loads(payload)
+            stick_id = data.get("stick_id")
+            acc_x    = data.get("acc_x")
+            acc_y    = data.get("acc_y")
+            acc_z    = data.get("acc_z")
+            gyro_x   = data.get("gyro_x")
+            gyro_y   = data.get("gyro_y")
+            gyro_z   = data.get("gyro_z")
+
+            if not all([stick_id, acc_x is not None, acc_y is not None, acc_z is not None,
+                        gyro_x is not None, gyro_y is not None, gyro_z is not None]):
+                logger.warning("[MQTT/IMU] Payload thieu truong: %s", data)
+                return
+
+            if self._loop and not self._loop.is_closed():
+                asyncio.run_coroutine_threadsafe(
+                    self._save_imu_async(
+                        stick_id=stick_id,
+                        acc_x=float(acc_x), acc_y=float(acc_y), acc_z=float(acc_z),
+                        gyro_x=float(gyro_x), gyro_y=float(gyro_y), gyro_z=float(gyro_z)
+                    ),
+                    self._loop,
+                )
+        except (json.JSONDecodeError, KeyError, ValueError) as exc:
+            logger.error("[MQTT/IMU] Parse payload that bai: %s | %s", payload, exc)
+
+    async def _save_imu_async(
+        self, stick_id: str,
+        acc_x: float, acc_y: float, acc_z: float,
+        gyro_x: float, gyro_y: float, gyro_z: float
+    ) -> None:
+        """Lưu các chỉ số IMU vào DB và kích hoạt xử lý nghiệp vụ."""
+        from core.database import async_session_factory as AsyncSessionLocal
+        from repositories.hardware_repo import insert_imu_log
+        from schemas.hardware_schema import HardwareImuIn
+        from services.imu_service import process_new_imu_data
+
+        async with AsyncSessionLocal() as db:
+            payload_schema = HardwareImuIn(
+                stick_id=stick_id,
+                acc_x=acc_x, acc_y=acc_y, acc_z=acc_z,
+                gyro_x=gyro_x, gyro_y=gyro_y, gyro_z=gyro_z
+            )
+            imu_log = await insert_imu_log(db=db, payload=payload_schema)
+            logger.info("[MQTT/IMU] Da luu vao DB: id=%s stick=%s acc=(%s,%s,%s) gyro=(%s,%s,%s)",
+                        imu_log.id, stick_id, acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z)
+
+            # Kích hoạt xử lý phân tích ngã & hoạt động
+            await process_new_imu_data(db=db, stick_id=stick_id, new_log=imu_log)
 
     # ── Publish helpers ──────────────────────────────────────────────────────
 
