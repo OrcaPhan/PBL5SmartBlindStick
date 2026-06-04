@@ -143,7 +143,9 @@ ALTER TABLE public.relationships OWNER TO postgres;
 CREATE TABLE public.sticks (
     stick_id character varying(20) NOT NULL,
     owner_id integer,
-    status character varying(20)
+    status character varying(20),
+    imu_offset_pitch double precision DEFAULT 0.0,
+    imu_offset_roll double precision DEFAULT 0.0
 );
 
 
@@ -521,6 +523,77 @@ ALTER TABLE ONLY public.sticks
     ADD CONSTRAINT sticks_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES public.users(id) ON DELETE CASCADE;
 
 
+--
+-- Name: imu_logs; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.imu_logs (
+    id integer NOT NULL,
+    stick_id character varying(20),
+    acc_x double precision,
+    acc_y double precision,
+    acc_z double precision,
+    gyro_x double precision,
+    gyro_y double precision,
+    gyro_z double precision,
+    "timestamp" timestamp without time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+
+ALTER TABLE public.imu_logs OWNER TO postgres;
+
+--
+-- Name: imu_logs_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.imu_logs_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.imu_logs_id_seq OWNER TO postgres;
+
+--
+-- Name: imu_logs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.imu_logs_id_seq OWNED BY public.imu_logs.id;
+
+
+--
+-- Name: imu_logs id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.imu_logs ALTER COLUMN id SET DEFAULT nextval('public.imu_logs_id_seq'::regclass);
+
+
+--
+-- Name: imu_logs imu_logs_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.imu_logs
+    ADD CONSTRAINT imu_logs_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: idx_imu_stick; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_imu_stick ON public.imu_logs USING btree (stick_id);
+
+
+--
+-- Name: imu_logs imu_logs_stick_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.imu_logs
+    ADD CONSTRAINT imu_logs_stick_id_fkey FOREIGN KEY (stick_id) REFERENCES public.sticks(stick_id) ON DELETE CASCADE;
+
+
 -- Completed on 2026-05-05 16:17:26
 
 --
@@ -528,4 +601,3 @@ ALTER TABLE ONLY public.sticks
 --
 
 \unrestrict 7KFBcyc3uXKSqCj54DWY2l4jGwgdIqSaLdqi6DY7d6K2F5igcr8E9IbQaJ6Hy7y
-
