@@ -8,7 +8,8 @@ from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.location_history import LocationHistory
-from schemas.hardware_schema import HardwareGpsIn
+from models.imu_log import IMULog
+from schemas.hardware_schema import HardwareGpsIn, HardwareImuIn
 
 
 async def insert_location_history(
@@ -28,6 +29,28 @@ async def insert_location_history(
     await db.commit()
     await db.refresh(location_log)
     return location_log
+
+
+async def insert_imu_log(
+    db: AsyncSession,
+    payload: HardwareImuIn,
+) -> IMULog:
+    """
+    Ghi một bản ghi IMU vào bảng imu_logs.
+    """
+    imu_log = IMULog(
+        stick_id=payload.stick_id,
+        acc_x=payload.acc_x,
+        acc_y=payload.acc_y,
+        acc_z=payload.acc_z,
+        gyro_x=payload.gyro_x,
+        gyro_y=payload.gyro_y,
+        gyro_z=payload.gyro_z,
+    )
+    db.add(imu_log)
+    await db.commit()
+    await db.refresh(imu_log)
+    return imu_log
 
 
 async def get_latest_location_by_stick_id(
