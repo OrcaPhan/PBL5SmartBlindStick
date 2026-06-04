@@ -34,4 +34,14 @@ class WebSocketManager:
                 except Exception:
                     pass
 
+    async def broadcast_alert(self, stick_id: str, alert_data: dict):
+        """Phát tín hiệu cảnh báo/cập nhật hoạt động qua WebSocket."""
+        if stick_id in self.active_connections:
+            message = json.dumps(alert_data, default=str)
+            for connection in self.active_connections[stick_id]:
+                try:
+                    await connection.send_text(message)
+                except Exception:
+                    pass
+
 ws_manager = WebSocketManager()
