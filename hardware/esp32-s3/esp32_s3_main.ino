@@ -2,6 +2,7 @@
 #include <PubSubClient.h>
 #include <TinyGPS++.h>
 #include <DFRobotDFPlayerMini.h>
+#include <Wire.h>
 
 // =========================
 // Cau hinh dinh danh thiet bi
@@ -30,16 +31,19 @@ const uint16_t MQTT_PORT  = 1883;
 
 String TOPIC_PUB_GPS;      // pbl5/smart_cane/{id}/gps
 String TOPIC_PUB_STATUS;   // pbl5/smart_cane/{id}/status
+String TOPIC_PUB_IMU;      // pbl5/smart_cane/{id}/imu
 String TOPIC_SUB_COMMAND;  // pbl5/smart_cane/{id}/command
 String TOPIC_SUB_ALERT;    // pbl5/smart_cane/{id}/alert
 
 // =========================
-// Cau hinh UART
+// Cau hinh chan tren ESP32-S3
 // =========================
-constexpr int GPS_RX_PIN = 16;
-constexpr int GPS_TX_PIN = 17;
-constexpr int DFP_RX_PIN = 20;
-constexpr int DFP_TX_PIN = 21;
+constexpr int GPS_RX_PIN  = 16;
+constexpr int GPS_TX_PIN  = 17;
+constexpr int DFP_RX_PIN  = 4;
+constexpr int DFP_TX_PIN  = 5;
+constexpr int MPU_SDA_PIN = 8;
+constexpr int MPU_SCL_PIN = 9;
 
 // =========================
 // Khoi tao doi tuong
@@ -58,10 +62,12 @@ PubSubClient mqtt_client(wifi_client);
 unsigned long last_gps_send_ms   = 0;
 unsigned long last_audio_play_ms = 0;
 unsigned long last_mqtt_retry_ms = 0;
+unsigned long last_imu_send_ms   = 0;
 
 constexpr unsigned long GPS_SEND_INTERVAL_MS   = 5000;  // Gui GPS moi 5 giay
 constexpr unsigned long AUDIO_SPAM_GUARD_MS    = 2000;
 constexpr unsigned long MQTT_RETRY_INTERVAL_MS = 3000;
+constexpr unsigned long IMU_SEND_INTERVAL_MS   = 1000;  // Gui IMU moi 1 giay (1000ms)
 
 // =========================
 // WiFi
@@ -131,6 +137,7 @@ void setup_mqtt() {
   // Khoi tao cac topic dua tren STICK_ID
   TOPIC_PUB_GPS     = String("pbl5/smart_cane/") + STICK_ID + "/gps";
   TOPIC_PUB_STATUS  = String("pbl5/smart_cane/") + STICK_ID + "/status";
+  TOPIC_PUB_IMU     = String("pbl5/smart_cane/") + STICK_ID + "/imu";
   TOPIC_SUB_COMMAND = String("pbl5/smart_cane/") + STICK_ID + "/command";
   TOPIC_SUB_ALERT   = String("pbl5/smart_cane/") + STICK_ID + "/alert";
 
@@ -224,6 +231,78 @@ void read_and_send_gps() {
 }
 
 // =========================
+// IMU: doc va publish qua MQTT
+// =========================
+const int MPU_ADDR = 0x68; // Dia chi I2C cua MPU-6050
+
+void setup_mpu() {
+  Wire.begin(MPU_SDA_PIN, MPU_SCL_PIN);
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x6B); // Thanh ghi PWR_MGMT_1
+  Wire.write(0);    // Thiet lap bang 0 de danh thuc MPU-6050
+  Wire.endTransmission(true);
+  Serial.println("[MPU6050] Khoi tao thanh cong!");
+}
+
+void read_and_send_imu() {
+  const unsigned long now = millis();
+  if (now - last_imu_send_ms < IMU_SEND_INTERVAL_MS) return;
+  last_imu_send_ms = now;
+
+  if (!mqtt_client.connected()) {
+    Serial.println("[IMU] MQTT chua ket noi, bo qua lan gui nay.");
+    return;
+  }
+
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x3B); // ACCEL_XOUT_H
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU_ADDR, 14, true);
+
+  if (Wire.available() < 14) {
+    Serial.println("[IMU] Khong the doc tu MPU6050!");
+    return;
+  }
+
+  int16_t AcX = Wire.read() << 8 | Wire.read();
+  int16_t AcY = Wire.read() << 8 | Wire.read();
+  int16_t AcZ = Wire.read() << 8 | Wire.read();
+  int16_t Tmp = Wire.read() << 8 | Wire.read(); // temperature (bo qua)
+  int16_t GyX = Wire.read() << 8 | Wire.read();
+  int16_t GyY = Wire.read() << 8 | Wire.read();
+  int16_t GyZ = Wire.read() << 8 | Wire.read();
+
+  // Chuyen doi sang don vi vat ly chuan
+  // Gia toc ±2g: chia cho 16384.0 LSB/g
+  // Van toc goc ±250 deg/s: chia cho 131.0 LSB/(deg/s)
+  float acc_x = AcX / 16384.0;
+  float acc_y = AcY / 16384.0;
+  float acc_z = AcZ / 16384.0;
+  float gyro_x = GyX / 131.0;
+  float gyro_y = GyY / 131.0;
+  float gyro_z = GyZ / 131.0;
+
+  // Dong goi JSON
+  String payload = String("{\"stick_id\":\"") + STICK_ID
+    + "\",\"acc_x\":"   + String(acc_x, 4)
+    + ",\"acc_y\":"   + String(acc_y, 4)
+    + ",\"acc_z\":"   + String(acc_z, 4)
+    + ",\"gyro_x\":"  + String(gyro_x, 4)
+    + ",\"gyro_y\":"  + String(gyro_y, 4)
+    + ",\"gyro_z\":"  + String(gyro_z, 4)
+    + "}";
+
+  if (mqtt_client.publish(TOPIC_PUB_IMU.c_str(), payload.c_str())) {
+    Serial.print("[IMU] Published -> ");
+    Serial.print(TOPIC_PUB_IMU);
+    Serial.print(" | ");
+    Serial.println(payload);
+  } else {
+    Serial.println("[IMU] Publish IMU that bai!");
+  }
+}
+
+// =========================
 // Setup
 // =========================
 void setup() {
@@ -241,6 +320,7 @@ void setup() {
     myDFPlayer.playMp3Folder(9999); // Am thanh khoi dong
   }
 
+  setup_mpu();
   setup_wifi();
   setup_mqtt();
 }
@@ -256,4 +336,5 @@ void loop() {
   ensure_mqtt_connection();
   mqtt_client.loop();
   read_and_send_gps();
+  read_and_send_imu();
 }
