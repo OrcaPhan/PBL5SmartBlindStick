@@ -16,6 +16,18 @@ class HardwareGpsIn(BaseModel):
     battery: int = Field(..., ge=0, le=100)
 
 
+class HardwareImuIn(BaseModel):
+    """Schema validate body IMU gửi từ thiết bị phần cứng."""
+
+    stick_id: str = Field(..., min_length=1, max_length=20)
+    acc_x: float
+    acc_y: float
+    acc_z: float
+    gyro_x: float
+    gyro_y: float
+    gyro_z: float
+
+
 class HardwareGpsOut(BaseModel):
     """Schema response sau khi ghi dữ liệu GPS thành công."""
 
