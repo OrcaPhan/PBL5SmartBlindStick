@@ -17,11 +17,12 @@ from core.minio_client import minio_client
 from core.mqtt_client import mqtt_client
 from repositories.detection_repo import insert_detection_log
 
-CONFIDENCE_THRESHOLD = 30.0
+CONFIDENCE_THRESHOLD = 50.0
 SPAM_GAP_SECONDS = 3
-ALERT_TOPIC = "smartstick/alert"
+ALERT_TOPIC_TEMPLATE = "pbl5/smart_cane/{stick_id}/command"
 
 _last_detection_by_stick: dict[str, dict[str, str | datetime]] = {}
+_latest_ai_results: dict[str, dict] = {}  # Lưu kết quả nhận diện mới nhất cho API polling
 logger = logging.getLogger(__name__)
 
 
@@ -52,6 +53,24 @@ def _should_send_alert(stick_id: str, object_name: str, now: datetime) -> bool:
     return (now - last_time) > timedelta(seconds=SPAM_GAP_SECONDS)
 
 
+def _build_alert_topic(stick_id: str) -> str:
+    """Tạo topic MQTT riêng cho từng gậy để tránh gửi nhầm thiết bị."""
+    return ALERT_TOPIC_TEMPLATE.format(stick_id=stick_id)
+
+
+def _map_class_to_audio_file(class_index: int) -> int:
+    """
+    Map class_index từ AI sang số file MP3.
+    Mặc định dùng index + 1 để khớp cách đánh số file của DFPlayer (001, 002...).
+    """
+    return max(1, class_index + 1)
+
+
+def get_latest_ai_result(stick_id: str) -> dict | None:
+    """Trả về kết quả nhận diện gần nhất của gậy."""
+    return _latest_ai_results.get(stick_id)
+
+
 async def process_camera_frame(
     db: AsyncSession,
     image_bytes: bytes,
@@ -80,6 +99,13 @@ async def process_camera_frame(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Khong the suy luan AI tu anh camera.",
         ) from exc
+        
+    # Lưu lại kết quả nhận diện để frontend có thể gọi API lấy hiển thị real-time
+    _latest_ai_results[stick_id] = {
+        "class_name": class_name,
+        "confidence": confidence,
+        "updated_at": datetime.now().isoformat(),
+    }
 
     if confidence < CONFIDENCE_THRESHOLD:
         return {
@@ -98,28 +124,24 @@ async def process_camera_frame(
 
     try:
         # Bước 1: Gửi MQTT trước để cảnh báo ngay lập tức.
+        alert_topic = _build_alert_topic(stick_id=stick_id)
+        file_number = _map_class_to_audio_file(class_index=class_index)
         mqtt_client.publish_command(
-            topic=ALERT_TOPIC,
-            message={
-                "stick_id": stick_id,
-                "object_name": class_name,
-                "confidence": confidence,
-                "class_index": class_index,
-                "action": "play_warning_sound",
-            },
+            topic=alert_topic,
+            message=str(file_number),
         )
 
-        # Bước 2: Upload MinIO, lấy URL public của ảnh.
+        # Bước 2: Upload MinIO.
         file_name = _build_image_object_name(stick_id=stick_id)
-        image_url = minio_client.upload_image(file_bytes=image_bytes, file_name=file_name)
+        minio_client.upload_image(file_bytes=image_bytes, file_name=file_name)
 
-        # Bước 3: Lưu DB với image_url vừa tạo.
+        # Bước 3: Lưu DB với relative path (file_name) vừa tạo.
         await insert_detection_log(
             db=db,
             stick_id=stick_id,
             object_name=class_name,
             confidence=confidence,
-            image_url=image_url,
+            image_url=file_name,
         )
     except HTTPException:
         raise
@@ -145,5 +167,5 @@ async def process_camera_frame(
         "message": "Obstacle detected and processed",
         "class_name": class_name,
         "confidence": confidence,
-        "image_url": image_url,
+        "image_url": file_name,
     }

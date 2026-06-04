@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ForeignKey, Integer, String
+from sqlalchemy import ForeignKey, Integer, String, Float, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from models.base import Base
@@ -14,6 +14,7 @@ from models.base import Base
 if TYPE_CHECKING:
     from models.detection_log import DetectionLog
     from models.location_history import LocationHistory
+    from models.imu_log import IMULog
     from models.user import User
 
 
@@ -29,6 +30,8 @@ class Stick(Base):
         nullable=True,
     )
     status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    imu_offset_pitch: Mapped[float] = mapped_column(Float, default=0.0, server_default=text("0.0"))
+    imu_offset_roll: Mapped[float] = mapped_column(Float, default=0.0, server_default=text("0.0"))
 
     owner: Mapped["User | None"] = relationship(
         "User",
@@ -41,6 +44,11 @@ class Stick(Base):
     )
     detection_logs: Mapped[list["DetectionLog"]] = relationship(
         "DetectionLog",
+        back_populates="stick",
+        cascade="all, delete-orphan",
+    )
+    imu_logs: Mapped[list["IMULog"]] = relationship(
+        "IMULog",
         back_populates="stick",
         cascade="all, delete-orphan",
     )

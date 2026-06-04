@@ -4,14 +4,15 @@ Cấu hình kết nối PostgreSQL bằng SQLAlchemy Async.
 
 import os
 from collections.abc import AsyncGenerator
-
+from dotenv import load_dotenv
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+load_dotenv()
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql+asyncpg://postgres:orca@localhost:5432/stickv1",
+    "postgresql+asyncpg://postgres:postgres@localhost:5432/stickv1",
 )
 
 engine = create_async_engine(

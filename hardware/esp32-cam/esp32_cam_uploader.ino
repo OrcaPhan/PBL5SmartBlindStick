@@ -13,8 +13,11 @@ const char* SERVER_PATH = "/api/camera/upload";
 const char* STICK_ID = "STK001";
 
 // Chu ky gui anh (ms)
-const unsigned long CAPTURE_INTERVAL_MS = 3000;
+const unsigned long CAPTURE_INTERVAL_MS = 500;
 unsigned long last_capture_ms = 0;
+
+// Doi tuong ket noi WiFiClient toan cuc de tai su dung ket noi (Keep-Alive)
+WiFiClient client;
 
 // =========================
 // AI Thinker ESP32-CAM pinmap
@@ -75,11 +78,11 @@ bool init_camera() {
 
   if (psramFound()) {
     config.frame_size = FRAMESIZE_VGA;
-    config.jpeg_quality = 12;
+    config.jpeg_quality = 15; // Giam dung luong anh tu 12 xuong 15 de truyen tai nhanh hon
     config.fb_count = 2;
   } else {
     config.frame_size = FRAMESIZE_QVGA;
-    config.jpeg_quality = 15;
+    config.jpeg_quality = 20; // QVGA cung can toi uu hoa dung luong hon
     config.fb_count = 1;
   }
 
@@ -88,6 +91,14 @@ bool init_camera() {
     Serial.printf("Khoi tao camera that bai, ma loi: 0x%x\n", err);
     return false;
   }
+  sensor_t * s = esp_camera_sensor_get();
+
+  // Lat doc
+  s->set_vflip(s, 1);
+
+  // Lat ngang
+  s->set_hmirror(s, 1);
+
   return true;
 }
 
@@ -98,11 +109,14 @@ bool upload_frame() {
     return false;
   }
 
-  WiFiClient client;
-  if (!client.connect(SERVER_HOST, SERVER_PORT)) {
-    Serial.println("Khong ket noi duoc den FastAPI server.");
-    esp_camera_fb_return(fb);
-    return false;
+  // Neu ngat ket noi, thuc hien ket noi lai
+  if (!client.connected()) {
+    Serial.println("Ket noi lai toi FastAPI server...");
+    if (!client.connect(SERVER_HOST, SERVER_PORT)) {
+      Serial.println("Khong ket noi duoc den FastAPI server.");
+      esp_camera_fb_return(fb);
+      return false;
+    }
   }
 
   String boundary = "----ESP32CamBoundary7MA4YWxkTrZu0gW";
@@ -120,7 +134,7 @@ bool upload_frame() {
 
   client.printf("POST %s HTTP/1.1\r\n", SERVER_PATH);
   client.printf("Host: %s:%u\r\n", SERVER_HOST, SERVER_PORT);
-  client.println("Connection: close");
+  client.println("Connection: keep-alive"); // Giu ket noi de tiep tuc su dung
   client.printf("Content-Type: multipart/form-data; boundary=%s\r\n", boundary.c_str());
   client.printf("Content-Length: %u\r\n\r\n", (unsigned int)content_length);
 
@@ -130,24 +144,58 @@ bool upload_frame() {
 
   esp_camera_fb_return(fb);
 
+  // Doc va phan tich response tu server de tieu thu het socket buffer
   unsigned long timeout_ms = millis();
   while (!client.available()) {
-    if (millis() - timeout_ms > 5000) {
+    if (millis() - timeout_ms > 3000) {
       Serial.println("Timeout khi cho response tu server.");
-      client.stop();
+      client.stop(); // Dong ket noi neu xay ra timeout
       return false;
     }
     delay(10);
   }
 
-  Serial.println("===== Server response =====");
+  Serial.println("===== Server response (Keep-Alive) =====");
+  int content_len = -1;
   while (client.available()) {
     String line = client.readStringUntil('\n');
+    line.trim();
+    if (line.length() == 0) {
+      // Ket thuc HTTP Headers
+      break;
+    }
     Serial.println(line);
+
+    if (line.startsWith("Content-Length:") || line.startsWith("content-length:")) {
+      int colon_idx = line.indexOf(':');
+      if (colon_idx != -1) {
+        String len_str = line.substring(colon_idx + 1);
+        len_str.trim();
+        content_len = len_str.toInt();
+      }
+    }
+  }
+
+  // Doc du lieu body dua tren Content-Length de khong lam tac socket cho phien sau
+  if (content_len > 0) {
+    Serial.print("Body: ");
+    for (int i = 0; i < content_len; i++) {
+      unsigned long char_timeout = millis();
+      while (!client.available()) {
+        if (millis() - char_timeout > 1000) {
+          Serial.println("\nTimeout khi dang doc body.");
+          client.stop();
+          return false;
+        }
+        delay(1);
+      }
+      char c = client.read();
+      Serial.print(c);
+    }
+    Serial.println();
   }
   Serial.println("===========================");
 
-  client.stop();
   return true;
 }
 

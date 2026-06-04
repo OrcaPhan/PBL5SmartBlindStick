@@ -1,5 +1,5 @@
 """
-Khởi tạo AI model ViT DINOv2 theo mô hình singleton.
+Khởi tạo AI model MobileNetV2 theo mô hình singleton.
 """
 
 from __future__ import annotations
@@ -8,17 +8,18 @@ import os
 from pathlib import Path
 import io
 
-import timm
 import torch
 from PIL import Image
 from torch import nn
 from torchvision import transforms
 
 
-MODEL_PATH = os.getenv("AI_MODEL_PATH", "weights/AI-PBL5-PHANLOAI.pth")
-MODEL_NAME = os.getenv("AI_MODEL_NAME", "vit_base_patch14_dinov2.lvd142m")
-NUM_CLASSES = int(os.getenv("AI_NUM_CLASSES", "11"))
-IMAGE_SIZE = int(os.getenv("AI_IMAGE_SIZE", "518"))
+MODEL_PATH = os.getenv("AI_MODEL_PATH", "weights/modelPBL5.pth")
+MODEL_NAME = os.getenv("AI_MODEL_NAME", "mobilenet_v2")
+NUM_CLASSES = int(os.getenv("AI_NUM_CLASSES", "10"))
+IMAGE_SIZE = int(os.getenv("AI_IMAGE_SIZE", "224"))
+
+# Danh sách lớp hiện tại của model MobileNetV2 (10 lớp)
 CLASS_NAMES = [name.strip() for name in os.getenv("AI_CLASS_NAMES", "").split(",") if name.strip()]
 if not CLASS_NAMES:
     CLASS_NAMES = [
@@ -28,12 +29,26 @@ if not CLASS_NAMES:
         "Thung rac",
         "Vat can",
         "Cay coi",
-        "O ga",
         "Cau thang",
         "Ban",
         "Xe co",
         "Nguoi",
     ]
+
+# Danh sách 11 lớp gốc tương ứng với thứ tự file âm thanh MP3 trên thẻ nhớ của gậy
+ORIGINAL_CLASS_NAMES = [
+    "Ghe",        # 0001.mp3
+    "Cua",        # 0002.mp3
+    "Hang rao",   # 0003.mp3
+    "Thung rac",  # 0004.mp3
+    "Vat can",    # 0005.mp3
+    "Cay coi",    # 0006.mp3
+    "O ga",       # 0007.mp3 (Không có trong model mới nhưng giữ để khớp chỉ số)
+    "Cau thang",  # 0008.mp3
+    "Ban",        # 0009.mp3
+    "Xe co",      # 0010.mp3
+    "Nguoi",      # 0011.mp3
+]
 
 
 class AiModelSingleton:
@@ -72,22 +87,27 @@ class AiModelSingleton:
         if self.model is not None:
             return
 
-        model = timm.create_model(
-            MODEL_NAME,
-            pretrained=False,
-            num_classes=NUM_CLASSES,
-        )
+        if MODEL_NAME == "mobilenet_v2":
+            import torchvision.models as models
+            model = models.mobilenet_v2(num_classes=NUM_CLASSES)
+        else:
+            import timm
+            model = timm.create_model(
+                MODEL_NAME,
+                pretrained=False,
+                num_classes=NUM_CLASSES,
+            )
 
         weight_path = Path(MODEL_PATH)
         if not weight_path.exists():
             raise FileNotFoundError(f"Khong tim thay file weight: {weight_path}")
 
-        state_dict = torch.load(weight_path, map_location=self.device)
+        state_dict = torch.load(weight_path, map_location=self.device, weights_only=False)
         try:
             model.load_state_dict(state_dict)
         except RuntimeError as exc:
             raise RuntimeError(
-                "Khong load duoc weight AI. Kiem tra AI_MODEL_NAME co khop kien truc file weight hay khong."
+                f"Khong load duoc weight AI. Kiem tra AI_MODEL_NAME={MODEL_NAME} co khop kien truc file weight hay khong."
             ) from exc
         model.to(self.device)
         model.eval()
@@ -116,13 +136,20 @@ class AiModelSingleton:
         logits = self._predict_logits(image)
         probs = torch.softmax(logits, dim=1)
         confidence, class_index_tensor = torch.max(probs, dim=1)
-        class_index = int(class_index_tensor.item())
+        model_index = int(class_index_tensor.item())
         confidence_percent = float(confidence.item() * 100)
 
-        if 0 <= class_index < len(CLASS_NAMES):
-            class_name = CLASS_NAMES[class_index]
+        # Lấy tên lớp từ danh sách lớp của model mới
+        if 0 <= model_index < len(CLASS_NAMES):
+            class_name = CLASS_NAMES[model_index]
         else:
-            class_name = f"class_{class_index}"
+            class_name = f"class_{model_index}"
+
+        # Ánh xạ ngược về chỉ số index cũ để đảm bảo thiết bị phát đúng file âm thanh tương ứng
+        try:
+            class_index = ORIGINAL_CLASS_NAMES.index(class_name)
+        except ValueError:
+            class_index = model_index
 
         return class_name, confidence_percent, class_index
 
