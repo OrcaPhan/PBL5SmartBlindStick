@@ -14,7 +14,7 @@ from torch import nn
 from torchvision import transforms
 
 
-MODEL_PATH = os.getenv("AI_MODEL_PATH", "weights/modelPBL5.pth")
+MODEL_PATH = os.getenv("AI_MODEL_PATH", "weights/modelPBL5_vr2.pth")
 MODEL_NAME = os.getenv("AI_MODEL_NAME", "mobilenet_v2")
 NUM_CLASSES = int(os.getenv("AI_NUM_CLASSES", "10"))
 IMAGE_SIZE = int(os.getenv("AI_IMAGE_SIZE", "224"))
