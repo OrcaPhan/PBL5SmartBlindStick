@@ -1,5 +1,6 @@
 """
-Khởi tạo AI model MobileNetV2 theo mô hình singleton.
+Khởi tạo AI model MobileNetV3 theo mô hình singleton.
+Dành cho Server phân tích hình ảnh từ ESP32-CAM.
 """
 
 from __future__ import annotations
@@ -14,28 +15,33 @@ from torch import nn
 from torchvision import transforms
 
 
-MODEL_PATH = os.getenv("AI_MODEL_PATH", "weights/modelPBL5.pth")
-MODEL_NAME = os.getenv("AI_MODEL_NAME", "mobilenet_v2")
+# Đã cập nhật tên file trọng số mặc định khớp với tên file xuất ra từ Kaggle
+MODEL_PATH = os.getenv("AI_MODEL_PATH", "weights/mobilenetv3_obstacle_best_2.pth")
+MODEL_NAME = os.getenv("AI_MODEL_NAME", "mobilenet_v3_large")
 NUM_CLASSES = int(os.getenv("AI_NUM_CLASSES", "10"))
 IMAGE_SIZE = int(os.getenv("AI_IMAGE_SIZE", "224"))
 
-# Danh sách lớp hiện tại của model MobileNetV2 (10 lớp)
+# =================================================================
+# DANH SÁCH LỚP CHUẨN XÁC (Khớp 100% với thứ tự Alphabet lúc train)
+# 0: chair | 1: door | 2: fence | 3: garbage_bin | 4: obstacle
+# 5: plant | 6: pothole | 7: stairs | 8: table | 9: vehicle
+# =================================================================
 CLASS_NAMES = [name.strip() for name in os.getenv("AI_CLASS_NAMES", "").split(",") if name.strip()]
 if not CLASS_NAMES:
     CLASS_NAMES = [
-        "Ghe",
-        "Cua",
-        "Hang rao",
-        "Thung rac",
-        "Vat can",
-        "Cay coi",
-        "Cau thang",
-        "Ban",
-        "Xe co",
-        "Nguoi",
+        "Ghe",         # 0: chair
+        "Cua",         # 1: door
+        "Hang rao",    # 2: fence
+        "Thung rac",   # 3: garbage_bin
+        "Vat can",     # 4: obstacle
+        "Cay coi",     # 5: plant
+        "O ga",        # 6: pothole
+        "Cau thang",   # 7: stairs
+        "Ban",         # 8: table
+        "Xe co",       # 9: vehicle
     ]
 
-# Danh sách 11 lớp gốc tương ứng với thứ tự file âm thanh MP3 trên thẻ nhớ của gậy
+# Danh sách gốc tương ứng với thứ tự file âm thanh MP3 trên thẻ nhớ của gậy
 ORIGINAL_CLASS_NAMES = [
     "Ghe",        # 0001.mp3
     "Cua",        # 0002.mp3
@@ -43,7 +49,7 @@ ORIGINAL_CLASS_NAMES = [
     "Thung rac",  # 0004.mp3
     "Vat can",    # 0005.mp3
     "Cay coi",    # 0006.mp3
-    "O ga",       # 0007.mp3 (Không có trong model mới nhưng giữ để khớp chỉ số)
+    "O ga",       # 0007.mp3 
     "Cau thang",  # 0008.mp3
     "Ban",        # 0009.mp3
     "Xe co",      # 0010.mp3
@@ -87,7 +93,12 @@ class AiModelSingleton:
         if self.model is not None:
             return
 
-        if MODEL_NAME == "mobilenet_v2":
+        # Cập nhật kiến trúc khởi tạo cho MobileNetV3
+        if MODEL_NAME == "mobilenet_v3_large":
+            import torchvision.models as models
+            # Khởi tạo khung model MobileNetV3 với số lớp tùy chỉnh
+            model = models.mobilenet_v3_large(num_classes=NUM_CLASSES)
+        elif MODEL_NAME == "mobilenet_v2":
             import torchvision.models as models
             model = models.mobilenet_v2(num_classes=NUM_CLASSES)
         else:
@@ -102,6 +113,7 @@ class AiModelSingleton:
         if not weight_path.exists():
             raise FileNotFoundError(f"Khong tim thay file weight: {weight_path}")
 
+        # Tải trọng số
         state_dict = torch.load(weight_path, map_location=self.device, weights_only=False)
         try:
             model.load_state_dict(state_dict)
@@ -109,6 +121,7 @@ class AiModelSingleton:
             raise RuntimeError(
                 f"Khong load duoc weight AI. Kiem tra AI_MODEL_NAME={MODEL_NAME} co khop kien truc file weight hay khong."
             ) from exc
+            
         model.to(self.device)
         model.eval()
         self.model = model
@@ -123,29 +136,38 @@ class AiModelSingleton:
 
         assert self.model is not None  # giúp type checker
         with torch.inference_mode():
+            # Đưa ảnh qua transform và chuyển lên thiết bị (CPU/GPU)
             image_tensor = self.transform(image).unsqueeze(0).to(self.device)
-            logits = self.model(image_tensor)
+            
+            # Sử dụng autocast để tăng tốc nếu đang chạy trên GPU
+            if self.device.type == 'cuda':
+                with torch.amp.autocast('cuda'):
+                    logits = self.model(image_tensor)
+            else:
+                logits = self.model(image_tensor)
+                
             return logits
 
     def predict(self, image_bytes: bytes) -> tuple[str, float, int]:
         """
-        Chạy suy luận từ bytes ảnh.
+        Chạy suy luận từ bytes ảnh gửi từ ESP32.
         Trả về (class_name, confidence_percent, class_index).
         """
         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         logits = self._predict_logits(image)
         probs = torch.softmax(logits, dim=1)
+        
         confidence, class_index_tensor = torch.max(probs, dim=1)
         model_index = int(class_index_tensor.item())
         confidence_percent = float(confidence.item() * 100)
 
-        # Lấy tên lớp từ danh sách lớp của model mới
+        # 1. Lấy tên tiếng Việt từ danh sách chuẩn khớp với model
         if 0 <= model_index < len(CLASS_NAMES):
             class_name = CLASS_NAMES[model_index]
         else:
             class_name = f"class_{model_index}"
 
-        # Ánh xạ ngược về chỉ số index cũ để đảm bảo thiết bị phát đúng file âm thanh tương ứng
+        # 2. Ánh xạ ngược về chỉ số index cũ để mạch ESP32 phát đúng MP3
         try:
             class_index = ORIGINAL_CLASS_NAMES.index(class_name)
         except ValueError:
@@ -158,5 +180,5 @@ ai_model = AiModelSingleton()
 
 
 def preload_ai_model() -> None:
-    """Hàm gọi lúc startup để preload model."""
+    """Hàm gọi lúc startup server (ví dụ: FastAPI startup event) để đưa model lên RAM."""
     ai_model.load()
