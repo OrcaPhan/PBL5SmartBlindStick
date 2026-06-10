@@ -14,26 +14,41 @@ from torch import nn
 from torchvision import transforms
 
 
-MODEL_PATH = os.getenv("AI_MODEL_PATH", "weights/modelPBL5.pth")
-MODEL_NAME = os.getenv("AI_MODEL_NAME", "mobilenet_v2")
-NUM_CLASSES = int(os.getenv("AI_NUM_CLASSES", "10"))
-IMAGE_SIZE = int(os.getenv("AI_IMAGE_SIZE", "224"))
+MODEL_PATH = os.getenv("AI_MODEL_PATH", "weights/modelPBL5_vr0.pth")
+MODEL_NAME = os.getenv("AI_MODEL_NAME", "vit_base_patch14_dinov2")
+NUM_CLASSES = int(os.getenv("AI_NUM_CLASSES", "11"))
+IMAGE_SIZE = int(os.getenv("AI_IMAGE_SIZE", "518"))
 
-# Danh sách lớp hiện tại của model MobileNetV2 (10 lớp)
+# Danh sách lớp hiện tại của model (11 lớp đối với model DINOv2, hoặc 10 lớp đối với MobileNet cũ)
 CLASS_NAMES = [name.strip() for name in os.getenv("AI_CLASS_NAMES", "").split(",") if name.strip()]
 if not CLASS_NAMES:
-    CLASS_NAMES = [
-        "Ghe",
-        "Cua",
-        "Hang rao",
-        "Thung rac",
-        "Vat can",
-        "Cay coi",
-        "Cau thang",
-        "Ban",
-        "Xe co",
-        "Nguoi",
-    ]
+    if NUM_CLASSES == 11:
+        CLASS_NAMES = [
+            "Ghe",
+            "Cua",
+            "Hang rao",
+            "Thung rac",
+            "Vat can",
+            "Cay coi",
+            "O ga",
+            "Cau thang",
+            "Ban",
+            "Xe co",
+            "Nguoi",
+        ]
+    else:
+        CLASS_NAMES = [
+            "Ghe",
+            "Cua",
+            "Hang rao",
+            "Thung rac",
+            "Vat can",
+            "Cay coi",
+            "Cau thang",
+            "Ban",
+            "Xe co",
+            "Nguoi",
+        ]
 
 # Danh sách 11 lớp gốc tương ứng với thứ tự file âm thanh MP3 trên thẻ nhớ của gậy
 ORIGINAL_CLASS_NAMES = [
