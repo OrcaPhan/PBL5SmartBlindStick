@@ -17,7 +17,7 @@ from core.minio_client import minio_client
 from core.mqtt_client import mqtt_client
 from repositories.detection_repo import insert_detection_log
 
-CONFIDENCE_THRESHOLD = 50.0
+CONFIDENCE_THRESHOLD = 70.0
 SPAM_GAP_SECONDS = 3
 ALERT_TOPIC_TEMPLATE = "pbl5/smart_cane/{stick_id}/command"
 
