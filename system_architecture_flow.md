@@ -54,62 +54,74 @@ graph TD
     S3 -->|UART khiển phát tệp tin MP3| DFP
 ```
 
-## 1.2. Sơ đồ Tuần tự Xử lý Camera & AI (2 Threads Sequence Diagram)
+## 1.2. Sơ đồ Tuần tự Phát hiện Vật cản và Cảnh báo (4 Giai đoạn với 2 Threads)
 
-Dưới đây là sơ đồ tuần tự thể hiện rõ nét cấu trúc **2 Luồng (Thread 1: Main Thread & Thread 2: Background Task Thread)** chạy song song trên FastAPI Server:
+Dưới đây là sơ đồ tuần tự đầy đủ 4 giai đoạn mô tả toàn bộ vòng đời hoạt động của hệ thống, đã được tối ưu hóa ngắn gọn và tích hợp thiết kế **2 Luồng (Thread 1: Main Thread & Thread 2: Background Task)** chạy song song trên FastAPI Server:
 
 ### Dạng Mermaid Sequence Diagram (Hiển thị trực tiếp trong Markdown)
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Cam as ESP32-CAM
-    participant Server as FastAPI (Main Thread)
-    participant AI as AI Model (MobileNetV3)
-    participant S3 as ESP32-S3
-    participant Loa as Loa (DFPlayer)
+    actor User as Người thân (Caretaker)
+    participant Web as Web Dashboard
+    participant Server as Backend FastAPI
+    participant AI as AI Service (MobileNetV3)
+    participant Broker as MQTT Broker
+    participant Cam as ESP32-CAM
+    participant S3 as ESP32-S3 + Loa
     participant BG as Background Task (Thread 2)
-    participant MinIO as MinIO Storage
-    participant DB as PostgreSQL DB
 
-    Cam->>Server: HTTP POST /api/camera/upload (frame ảnh)
-    activate Server
-    
-    note over Server: [Thread 1] Cập nhật ngay bộ đệm hình ảnh MJPEG Stream
-    Server->>Server: Cập nhật MJPEG Stream
-    
-    Server->>AI: loop.run_in_executor (ai_model.predict)
-    activate AI
-    note right of Server: Chạy AI ở luồng con riêng<br/>tránh đơ Event Loop chính
-    AI-->>Server: Trả về kết quả (Vật cản + Độ tự tin >= 70%)
-    deactivate AI
+    Note over User, BG: Giai đoạn 1: Kích hoạt Hệ thống Camera
+    User->>Web: Nhấn "Bật Camera"
+    Web->>Server: POST /api/camera/toggle (action: "ON")
+    Server->>Broker: Publish "CAM_ON" command
+    Broker->>Cam: Nhận lệnh CAM_ON -> Khởi động camera (OV2640)
+    Server-->>Web: Trả về {status: "ON"}
+    Web->>Server: Kết nối stream GET /api/camera/stream/STK002
 
-    alt Phát hiện vật cản nguy hiểm & Qua bộ lọc chống spam
-        par [Cảnh báo siêu tốc]
-            Server->>Server: loop.run_in_executor (MQTT)
-            Server->>S3: MQTT command (mã âm thanh)
-            activate S3
-            S3->>Loa: Phát âm thanh cảnh báo vật cản
-            deactivate S3
-        and [Tác vụ lưu trữ nặng]
-            Server->>BG: background_tasks.add_task(save_detection_log_bg)
-            activate BG
+    Note over User, BG: Giai đoạn 2: Chu trình phát hiện & Cảnh báo khép kín (Định kỳ 1s)
+    loop Định kỳ 1 giây
+        Cam->>Cam: Chụp ảnh JPEG
+        Cam->>Server: POST /api/camera/upload (Image Bytes)
+        Server->>Server: Cập nhật bộ đệm MJPEG Stream
+        
+        note over Server, AI: [Thread 1] Chạy AI trong Thread riêng
+        Server->>AI: loop.run_in_executor (predict)
+        AI->>AI: Tiền xử lý & Forward MobileNetV3
+        AI-->>Server: Trả về {class, confidence}
+        
+        alt Độ tự tin >= 70% & Thỏa bộ lọc chống spam
+            par [Thread 1: Cảnh báo siêu tốc]
+                Server->>Broker: Publish mã file âm thanh (MQTT)
+                Broker->>S3: Nhận mã file âm thanh
+                S3->>S3: DFPlayer phát cảnh báo qua Loa
+            and [Thread 2 - Chạy nền] Lưu trữ lịch sử
+                Server->>BG: background_tasks.add_task()
+            end
+        else Độ tự tin < 70% hoặc trong thời gian chống spam
+            Server->>Server: Bỏ qua cảnh báo
         end
+        
+        Server-->>Cam: Trả về 200 OK (Giải phóng Cam ngay)
+        
+        Note over BG: [Thread 2] Chạy ngầm sau khi phản hồi Cam
+        BG->>BG: Upload MinIO & Ghi log DB
     end
 
-    Server-->>Cam: HTTP Response 200 OK (Trả kết quả xử lý sớm)
-    deactivate Server
+    Note over User, BG: Giai đoạn 3: Cập nhật thông tin lên giao diện
+    loop Polling mỗi 1 giây
+        Web->>Server: GET /api/camera/latest-result/STK002
+        Server-->>Web: Trả về {object_name, confidence, timestamp}
+        Web->>Web: Hiển thị tên vật cản và độ tin cậy
+    end
 
-    note over BG, DB: [Thread 2] Tác vụ lưu trữ chạy nền hoàn toàn độc lập
-    BG->>MinIO: Upload hình ảnh vật cản (.jpg)
-    activate MinIO
-    MinIO-->>BG: Thành công
-    deactivate MinIO
-    BG->>DB: Ghi nhận nhật ký phát hiện (Detection Log)
-    activate DB
-    DB-->>BG: Thành công
-    deactivate DB
-    deactivate BG
+    Note over User, BG: Giai đoạn 4: Ngắt kết nối & Hạ tầng Camera
+    User->>Web: Nhấn "Tắt Camera"
+    Web->>Server: POST /api/camera/toggle (action: "OFF")
+    Server->>Broker: Publish "CAM_OFF" command
+    Broker->>Cam: Nhận lệnh CAM_OFF -> Dừng chụp ảnh
+    Server-->>Web: Trả về {status: "OFF"}
 ```
 
 ### Dạng mã nguồn PlantUML (Độ tương thích cao)
@@ -120,66 +132,115 @@ autonumber
 skinparam BoxPadding 10
 skinparam ParticipantPadding 10
 
-box "Client" #LightYellow
+box "Web & Caretaker" #LightYellow
+actor "Người thân" as User
+participant "Web Dashboard" as Web
+end box
+
+box "FastAPI Backend (Thread 1: Main / Real-time)" #LightBlue
+participant "Backend FastAPI" as Server
+participant "AI Service\n(MobileNetV3)" as AI
+end box
+
+box "Broker" #LightGray
+participant "MQTT Broker" as Broker
+end box
+
+box "Hardware Clients" #LightGreen
 participant "ESP32-CAM" as Cam
-end box
-
-box "FastAPI Backend (Thread 1: Main Thread / Real-time)" #LightBlue
-participant "FastAPI Server\n(Main Event Loop)" as Server
-participant "AI Model\n(MobileNetV3)" as AI
-end box
-
-box "Hardware Alert" #LightGreen
-participant "ESP32-S3" as S3
-participant "Loa\n(DFPlayer)" as Loa
+participant "ESP32-S3\n+ Loa (DFPlayer)" as S3
 end box
 
 box "FastAPI Backend (Thread 2: Background Task)" #LightCyan
 participant "Background\nQueue" as BG
-participant "MinIO" as MinIO
-participant "PostgreSQL" as DB
+participant "MinIO / Database" as DB
 end box
 
-Cam -> Server: HTTP POST /api/camera/upload (frame ảnh)
+== Giai đoạn 1: Kích hoạt Hệ thống Camera ==
+
+User -> Web: Nhấn "Bật Camera"
+activate Web
+Web -> Server: POST /api/camera/toggle (action: "ON")
+activate Server
+Server -> Broker: Publish "CAM_ON" command
+activate Broker
+Broker -> Cam: Lệnh CAM_ON -> Khởi động camera (OV2640)
+deactivate Broker
+Server --> Web: Trả về trạng thái {status: "ON"}
+deactivate Server
+Web -> Server: Hiển thị stream (GET /api/camera/stream)
+deactivate Web
+
+== Giai đoạn 2: Chu trình phát hiện & Cảnh báo khép kín (Định kỳ 1s) ==
+
+activate Cam
+Cam -> Cam: Chụp ảnh JPEG
+Cam -> Server: POST /api/camera/upload (Image Bytes)
 activate Server
 
-Server -> Server: Cập nhật bộ đệm MJPEG Stream\n(Stream mượt lên Web App)
+Server -> Server: Cập nhật bộ đệm MJPEG Stream\n(Để Web xem camera mượt mà)
 
-Server -> AI: loop.run_in_executor (ai_model.predict)
+Server -> AI: loop.run_in_executor (predict)
 activate AI
-note right of Server: AI chạy trong Thread riêng\nkhông block Event Loop
-AI --> Server: Trả về (Object Name, Confidence, Class Index)
+note right of Server: AI chạy trong Thread riêng\ntránh đơ Event Loop chính
+AI -> AI: Tiền xử lý & Forward pass MobileNetV3
+AI --> Server: Trả về {class, confidence}
 deactivate AI
 
-alt Phát hiện vật cản (Confidence >= 70%) & Qua bộ lọc chống spam
-    
-    note over Server, S3: [Thread 1: Thực hiện cảnh báo tức thời]
-    Server -> Server: loop.run_in_executor (mqtt_client.publish)
-    Server -> S3: MQTT command (mã âm thanh MP3)
-    activate S3
-    S3 -> Loa: Phát cảnh báo âm thanh
-    deactivate S3
-
-    note over Server, BG: [Thread 2: Đẩy tác vụ nặng xuống hàng đợi chạy nền]
-    Server -> BG: background_tasks.add_task(save_detection_log_bg)
-    activate BG
-    
+alt Độ tự tin >= 70% & Thỏa bộ lọc chống spam
+    par [Thread 1: Cảnh báo siêu tốc]
+        Server -> Server: loop.run_in_executor (MQTT Publish)
+        Server -> Broker: Publish mã file âm thanh (MQTT)
+        activate Broker
+        Broker -> S3: Nhận mã file âm thanh
+        deactivate Broker
+        activate S3
+        S3 -> S3: DFPlayer phát cảnh báo âm thanh
+        deactivate S3
+    and [Thread 2: Tác vụ lưu trữ nặng]
+        Server -> BG: background_tasks.add_task(save_detection_log_bg)
+        activate BG
+    end
+else Độ tự tin < 70% hoặc trong thời gian chống spam
+    Server -> Server: Bỏ qua cảnh báo
 end
 
-Server --> Cam: HTTP Response 200 OK (Trả kết quả xử lý)
+Server --> Cam: HTTP Response 200 OK (Giải phóng Cam)
 deactivate Server
+deactivate Cam
 
-note over BG, DB: [Tác vụ chạy nền (Thread 2) tiếp tục thực hiện độc lập]
-BG -> MinIO: Upload hình ảnh vật cản (.jpg)
-activate MinIO
-MinIO --> BG: Thành công
-deactivate MinIO
-
-BG -> DB: Ghi nhận nhật ký phát hiện (Detection Log)
+note over BG, DB: [Thread 2] Tác vụ lưu trữ chạy nền hoàn toàn độc lập
+BG -> DB: Upload ảnh lên MinIO & Lưu log vào PostgreSQL
 activate DB
 DB --> BG: Thành công
 deactivate DB
 deactivate BG
+
+== Giai đoạn 3: Cập nhật thông tin lên giao diện ==
+
+loop Polling mỗi 1 giây
+    Web -> Server: GET /api/camera/latest-result/STK002
+    activate Web
+    activate Server
+    Server --> Web: Trả về {object_name, confidence, timestamp}
+    deactivate Server
+    Web -> Web: Hiển thị tên vật cản và độ tin cậy
+    deactivate Web
+end
+
+== Giai đoạn 4: Ngắt kết nối & Hạ tầng Camera ==
+
+User -> Web: Nhấn "Tắt Camera"
+activate Web
+Web -> Server: POST /api/camera/toggle (action: "OFF")
+activate Server
+Server -> Broker: Publish "CAM_OFF" command
+activate Broker
+Broker -> Cam: Lệnh CAM_OFF -> Dừng chụp ảnh
+deactivate Broker
+Server --> Web: Trả về trạng thái {status: "OFF"}
+deactivate Server
+deactivate Web
 
 @enduml
 ```
