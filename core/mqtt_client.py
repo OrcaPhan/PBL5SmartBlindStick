@@ -235,10 +235,19 @@ class MqttClient:
         if not topic:
             raise ValueError("Topic MQTT khong duoc de trong.")
         payload = json.dumps(message, ensure_ascii=False) if isinstance(message, dict) else message
-        self.connect()
-        result = self._client.publish(topic, payload=payload, qos=0, retain=False)
-        if result.rc != mqtt.MQTT_ERR_SUCCESS:
-            raise RuntimeError(f"Khong the publish len topic '{topic}'. rc={result.rc}")
+        
+        # Tránh kết nối đồng bộ trong luồng request khi broker mất kết nối.
+        # loop_start() của paho-mqtt sẽ tự động thực hiện reconnect ở luồng nền.
+        if not self._connected and not self._client.is_connected():
+            logger.warning("[MQTT] Chua ket noi den broker. Bo qua gui lenh tren topic: %s", topic)
+            return
+
+        try:
+            result = self._client.publish(topic, payload=payload, qos=0, retain=False)
+            if result.rc != mqtt.MQTT_ERR_SUCCESS:
+                logger.error("[MQTT] Publish den topic %s that bai, rc=%s", topic, result.rc)
+        except Exception as exc:
+            logger.error("[MQTT] Gap loi khi publish message den topic %s: %s", topic, exc)
 
     def publish_audio_command(self, stick_id: str, file_number: int) -> None:
         """Gửi lệnh phát âm thanh xuống thiết bị."""

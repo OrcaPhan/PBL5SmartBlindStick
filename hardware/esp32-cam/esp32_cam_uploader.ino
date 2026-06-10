@@ -5,15 +5,15 @@
 // =========================
 // Cau hinh WiFi + Server
 // =========================
-const char* WIFI_SSID = "KTKH P208 C";
-const char* WIFI_PASSWORD = "DUTITF2005";
-const char* SERVER_HOST = "192.168.1.100";  // IP may tinh chay FastAPI
+const char* WIFI_SSID = "O";
+const char* WIFI_PASSWORD = "orcapbl5";
+const char* SERVER_HOST = "10.97.141.64";  // IP may tinh chay FastAPI
 const uint16_t SERVER_PORT = 8000;
 const char* SERVER_PATH = "/api/camera/upload";
-const char* STICK_ID = "STK001";
+const char* STICK_ID = "STK002";
 
 // Chu ky gui anh (ms)
-const unsigned long CAPTURE_INTERVAL_MS = 500;
+const unsigned long CAPTURE_INTERVAL_MS = 1000;
 unsigned long last_capture_ms = 0;
 
 // Doi tuong ket noi WiFiClient toan cuc de tai su dung ket noi (Keep-Alive)
@@ -176,23 +176,12 @@ bool upload_frame() {
     }
   }
 
-  // Doc du lieu body dua tren Content-Length de khong lam tac socket cho phien sau
+  // Doc du lieu body nhanh bang cach doc ca chuoi
   if (content_len > 0) {
+    client.setTimeout(1000); // Set timeout 1 giay de doc
+    String body = client.readString();
     Serial.print("Body: ");
-    for (int i = 0; i < content_len; i++) {
-      unsigned long char_timeout = millis();
-      while (!client.available()) {
-        if (millis() - char_timeout > 1000) {
-          Serial.println("\nTimeout khi dang doc body.");
-          client.stop();
-          return false;
-        }
-        delay(1);
-      }
-      char c = client.read();
-      Serial.print(c);
-    }
-    Serial.println();
+    Serial.println(body);
   }
   Serial.println("===========================");
 

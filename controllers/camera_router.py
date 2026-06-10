@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.database import get_db
 from schemas.camera_schema import CameraUploadOut, CameraToggleIn
 from services.ai_service import get_latest_ai_result, process_camera_frame
-from services.stream_service import frame_generator, update_frame
+from services.stream_service import frame_generator
 from core.mqtt_client import mqtt_client
 from core.security import get_current_user
 from models.user import User
@@ -32,9 +32,6 @@ async def upload_camera_image(
     """
     try:
         image_bytes = await file.read()
-
-        # Cập nhật bộ đệm stream để phục vụ GET /stream/{stick_id}
-        update_frame(stick_id, image_bytes)
 
         result = await process_camera_frame(
             image_bytes=image_bytes,

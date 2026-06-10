@@ -12,8 +12,8 @@ const char* STICK_ID = "STK002";
 // =========================
 // Cau hinh WiFi
 // =========================
-const char* WIFI_SSID     = "KTKH P208 C";
-const char* WIFI_PASSWORD = "DUTITF2005";
+const char* WIFI_SSID     = "O";
+const char* WIFI_PASSWORD = "orcapbl5";
 
 // =========================
 // Cau hinh MQTT Broker

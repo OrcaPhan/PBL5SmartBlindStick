@@ -18,6 +18,7 @@ from core.minio_client import minio_client
 from core.mqtt_client import mqtt_client
 from core.database import async_session_factory
 from repositories.detection_repo import insert_detection_log
+from services.stream_service import update_frame
 
 CONFIDENCE_THRESHOLD = 70.0
 SPAM_GAP_SECONDS = 3
@@ -79,29 +80,14 @@ async def save_detection_log_bg(
     confidence: float,
     image_url: str,
     image_bytes: bytes,
-    class_index: int,
 ) -> None:
     """
-    Tác vụ chạy ngầm để gửi cảnh báo MQTT, upload ảnh lên MinIO và lưu vết vào Database.
-    Sử dụng thread pool executor cho các tác vụ đồng bộ (MQTT publish và MinIO upload) để tránh block event loop,
-    và mở DB session mới để thực hiện lưu DB bất đồng bộ độc lập.
+    Tác vụ chạy ngầm để upload ảnh lên MinIO và lưu vết vào Database.
+    Đây là luồng hậu trường (Deferred Background Path) chạy sau khi đã gửi response.
     """
     loop = asyncio.get_running_loop()
 
-    # 1. Gửi MQTT cảnh báo (chạy trong thread riêng)
-    try:
-        alert_topic = _build_alert_topic(stick_id=stick_id)
-        file_number = _map_class_to_audio_file(class_index=class_index)
-        await loop.run_in_executor(
-            None,
-            mqtt_client.publish_command,
-            alert_topic,
-            str(file_number),
-        )
-    except Exception:
-        logger.exception("Loi khi publish MQTT trong background task.")
-
-    # 2. Upload MinIO và lưu DB
+    # Upload MinIO và lưu DB
     try:
         # Upload MinIO song song (chạy trong thread riêng)
         await loop.run_in_executor(
@@ -130,9 +116,16 @@ async def process_camera_frame(
     background_tasks: BackgroundTasks,
 ) -> dict[str, str | float]:
     """
-    Xử lý 1 frame ảnh từ ESP32-CAM theo luồng tối ưu hóa cực hạn:
-    AI nhận diện -> Kiểm tra độ tin cậy -> Giao tiếp phi chặn để trả HTTP response sớm cho ESP32.
-    Gửi MQTT cảnh báo, upload ảnh lên MinIO và ghi DB log được chạy ngầm hoàn toàn qua BackgroundTasks.
+    Xử lý 1 frame ảnh từ ESP32-CAM tối ưu độ trễ thấp nhất:
+    1. Cập nhật frame hình ảnh MJPEG Stream (update_frame) ngay lập tức trên main thread (không block).
+    2. Chạy AI model trong ThreadPoolExecutor (tránh block Event Loop).
+    3. Nếu phát hiện vật cản:
+       - Gửi cảnh báo MQTT tới ESP32-S3 (chạy trong thread riêng do sync I/O).
+         Bọc trong try-except để nếu lỗi MQTT cũng không làm sập luồng upload ảnh của ESP32-CAM.
+       - Thêm tác vụ hậu trường vào BackgroundTasks (Luồng ngầm):
+         + Upload ảnh lên MinIO.
+         + Lưu log vào Database.
+    4. Trả về kết quả sớm.
     """
     if not image_bytes:
         raise HTTPException(
@@ -145,8 +138,19 @@ async def process_camera_frame(
             detail="stick_id khong duoc de trong.",
         )
 
+    # 1. CẬP NHẬT FRAME STREAM NGAY LẬP TỨC TRÊN MAIN THREAD
+    # Giúp camera stream hoạt động mượt mà, phản hồi ngay lập tức và độc lập với độ trễ suy luận AI
+    update_frame(stick_id, image_bytes)
+
+    loop = asyncio.get_running_loop()
+
+    # 2. CHẠY AI INFERENCE TRONG THREADPOOL EXECUTOR
     try:
-        class_name, confidence, class_index = ai_model.predict(image_bytes)
+        class_name, confidence, class_index = await loop.run_in_executor(
+            None,
+            ai_model.predict,
+            image_bytes,
+        )
     except Exception as exc:
         logger.exception("Loi suy luan AI khi xu ly anh camera.")
         raise HTTPException(
@@ -154,13 +158,14 @@ async def process_camera_frame(
             detail="Khong the suy luan AI tu anh camera.",
         ) from exc
         
-    # Lưu lại kết quả nhận diện để frontend có thể gọi API lấy hiển thị real-time
+    # Lưu lại kết quả nhận diện mới nhất cho API polling
     _latest_ai_results[stick_id] = {
         "class_name": class_name,
         "confidence": confidence,
         "updated_at": datetime.now().isoformat(),
     }
 
+    # Trường hợp không phát hiện vật cản (dưới threshold)
     if confidence < CONFIDENCE_THRESHOLD:
         return {
             "message": "No obstacle detected",
@@ -169,6 +174,7 @@ async def process_camera_frame(
         }
 
     now = datetime.now()
+    # Trường hợp bị bỏ qua do chống spam cảnh báo
     if not _should_send_alert(stick_id=stick_id, object_name=class_name, now=now):
         return {
             "message": "Obstacle skipped due to anti-spam",
@@ -176,11 +182,25 @@ async def process_camera_frame(
             "confidence": confidence,
         }
 
+    # Có vật cản hợp lệ: Gửi MQTT cảnh báo (luồng chính) và đẩy MinIO/DB (luồng ngầm)
     try:
-        # Tạo sẵn tên file để trả về response và đưa vào tác vụ chạy ngầm
         file_name = _build_image_object_name(stick_id=stick_id)
+        alert_topic = _build_alert_topic(stick_id=stick_id)
+        file_number = _map_class_to_audio_file(class_index=class_index)
 
-        # Đẩy toàn bộ việc gửi MQTT, upload MinIO và ghi DB vào background_tasks của FastAPI
+        # 3. GỬI MQTT CẢNH BÁO TỚI ESP32-S3 TRONG THREAD RIÊNG
+        # Bọc trong try-except để cô lập lỗi kết nối MQTT Broker (tránh gây crash HTTP response và đơ cam)
+        try:
+            await loop.run_in_executor(
+                None,
+                mqtt_client.publish_command,
+                alert_topic,
+                str(file_number),
+            )
+        except Exception:
+            logger.exception("Loi khi publish MQTT cho ESP32-S3 trong luong chinh.")
+
+        # 4. ĐẨY CÁC TÁC VỤ NẶNG (MINIO & DB) VÀO HÀNG ĐỢI CHẠY NGẦM
         background_tasks.add_task(
             save_detection_log_bg,
             stick_id=stick_id,
@@ -188,7 +208,6 @@ async def process_camera_frame(
             confidence=confidence,
             image_url=file_name,
             image_bytes=image_bytes,
-            class_index=class_index,
         )
 
     except Exception as exc:
@@ -204,7 +223,7 @@ async def process_camera_frame(
     }
 
     return {
-        "message": "Obstacle detected and processed (queued background operations)",
+        "message": "Obstacle detected and warning processed",
         "class_name": class_name,
         "confidence": confidence,
         "image_url": file_name,
