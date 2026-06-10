@@ -5,16 +5,18 @@ Service xử lý ảnh camera: nhận diện, gửi cảnh báo và lưu log.
 from __future__ import annotations
 
 import logging
+import asyncio
 from datetime import datetime, timedelta
 from uuid import uuid4
 
-from fastapi import HTTPException, status
+from fastapi import HTTPException, status, BackgroundTasks
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.ai_model import ai_model
 from core.minio_client import minio_client
 from core.mqtt_client import mqtt_client
+from core.database import async_session_factory
 from repositories.detection_repo import insert_detection_log
 
 CONFIDENCE_THRESHOLD = 70.0
@@ -71,14 +73,66 @@ def get_latest_ai_result(stick_id: str) -> dict | None:
     return _latest_ai_results.get(stick_id)
 
 
+async def save_detection_log_bg(
+    stick_id: str,
+    object_name: str,
+    confidence: float,
+    image_url: str,
+    image_bytes: bytes,
+    class_index: int,
+) -> None:
+    """
+    Tác vụ chạy ngầm để gửi cảnh báo MQTT, upload ảnh lên MinIO và lưu vết vào Database.
+    Sử dụng thread pool executor cho các tác vụ đồng bộ (MQTT publish và MinIO upload) để tránh block event loop,
+    và mở DB session mới để thực hiện lưu DB bất đồng bộ độc lập.
+    """
+    loop = asyncio.get_running_loop()
+
+    # 1. Gửi MQTT cảnh báo (chạy trong thread riêng)
+    try:
+        alert_topic = _build_alert_topic(stick_id=stick_id)
+        file_number = _map_class_to_audio_file(class_index=class_index)
+        await loop.run_in_executor(
+            None,
+            mqtt_client.publish_command,
+            alert_topic,
+            str(file_number),
+        )
+    except Exception:
+        logger.exception("Loi khi publish MQTT trong background task.")
+
+    # 2. Upload MinIO và lưu DB
+    try:
+        # Upload MinIO song song (chạy trong thread riêng)
+        await loop.run_in_executor(
+            None,
+            minio_client.upload_image,
+            image_bytes,
+            image_url,
+        )
+
+        # Lưu Database với Session mới độc lập
+        async with async_session_factory() as session:
+            await insert_detection_log(
+                db=session,
+                stick_id=stick_id,
+                object_name=object_name,
+                confidence=confidence,
+                image_url=image_url,
+            )
+    except Exception:
+        logger.exception("Loi khi thuc hien ghi log camera frame trong background task.")
+
+
 async def process_camera_frame(
-    db: AsyncSession,
     image_bytes: bytes,
     stick_id: str,
+    background_tasks: BackgroundTasks,
 ) -> dict[str, str | float]:
     """
-    Xử lý 1 frame ảnh từ ESP32-CAM theo luồng:
-    AI nhận diện -> MQTT -> MinIO -> DB (khi vượt ngưỡng confidence).
+    Xử lý 1 frame ảnh từ ESP32-CAM theo luồng tối ưu hóa cực hạn:
+    AI nhận diện -> Kiểm tra độ tin cậy -> Giao tiếp phi chặn để trả HTTP response sớm cho ESP32.
+    Gửi MQTT cảnh báo, upload ảnh lên MinIO và ghi DB log được chạy ngầm hoàn toàn qua BackgroundTasks.
     """
     if not image_bytes:
         raise HTTPException(
@@ -123,34 +177,20 @@ async def process_camera_frame(
         }
 
     try:
-        # Bước 1: Gửi MQTT trước để cảnh báo ngay lập tức.
-        alert_topic = _build_alert_topic(stick_id=stick_id)
-        file_number = _map_class_to_audio_file(class_index=class_index)
-        mqtt_client.publish_command(
-            topic=alert_topic,
-            message=str(file_number),
-        )
-
-        # Bước 2: Upload MinIO.
+        # Tạo sẵn tên file để trả về response và đưa vào tác vụ chạy ngầm
         file_name = _build_image_object_name(stick_id=stick_id)
-        minio_client.upload_image(file_bytes=image_bytes, file_name=file_name)
 
-        # Bước 3: Lưu DB với relative path (file_name) vừa tạo.
-        await insert_detection_log(
-            db=db,
+        # Đẩy toàn bộ việc gửi MQTT, upload MinIO và ghi DB vào background_tasks của FastAPI
+        background_tasks.add_task(
+            save_detection_log_bg,
             stick_id=stick_id,
             object_name=class_name,
             confidence=confidence,
             image_url=file_name,
+            image_bytes=image_bytes,
+            class_index=class_index,
         )
-    except HTTPException:
-        raise
-    except SQLAlchemyError as exc:
-        logger.exception("Loi SQLAlchemy khi luu detection log.")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Loi he thong khi luu detection log.",
-        ) from exc
+
     except Exception as exc:
         logger.exception("Loi tong quat trong luong xu ly frame camera.")
         raise HTTPException(
@@ -164,7 +204,7 @@ async def process_camera_frame(
     }
 
     return {
-        "message": "Obstacle detected and processed",
+        "message": "Obstacle detected and processed (queued background operations)",
         "class_name": class_name,
         "confidence": confidence,
         "image_url": file_name,

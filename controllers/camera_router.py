@@ -2,7 +2,7 @@
 Router cho API camera upload ảnh từ ESP32-CAM.
 """
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,9 +23,9 @@ router = APIRouter(prefix="/api/camera", tags=["Camera"])
     status_code=status.HTTP_200_OK,
 )
 async def upload_camera_image(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     stick_id: str = Form(...),
-    db: AsyncSession = Depends(get_db),
 ) -> CameraUploadOut:
     """
     Nhận ảnh từ ESP32-CAM và xử lý nhận diện vật cản.
@@ -37,9 +37,9 @@ async def upload_camera_image(
         update_frame(stick_id, image_bytes)
 
         result = await process_camera_frame(
-            db=db,
             image_bytes=image_bytes,
             stick_id=stick_id,
+            background_tasks=background_tasks,
         )
         return CameraUploadOut(**result)
     except HTTPException:
