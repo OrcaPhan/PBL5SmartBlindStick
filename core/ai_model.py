@@ -16,15 +16,15 @@ from torchvision import transforms
 
 
 # Đã cập nhật tên file trọng số mặc định khớp với tên file xuất ra từ Kaggle
-MODEL_PATH = os.getenv("AI_MODEL_PATH", "weights/mobilenetv3_obstacle_best_2.pth")
+MODEL_PATH = os.getenv("AI_MODEL_PATH", "weights/modelPBL5_vr4.pth")
 MODEL_NAME = os.getenv("AI_MODEL_NAME", "mobilenet_v3_large")
-NUM_CLASSES = int(os.getenv("AI_NUM_CLASSES", "10"))
+NUM_CLASSES = int(os.getenv("AI_NUM_CLASSES", "11"))
 IMAGE_SIZE = int(os.getenv("AI_IMAGE_SIZE", "224"))
 
 # =================================================================
 # DANH SÁCH LỚP CHUẨN XÁC (Khớp 100% với thứ tự Alphabet lúc train)
 # 0: chair | 1: door | 2: fence | 3: garbage_bin | 4: obstacle
-# 5: plant | 6: pothole | 7: stairs | 8: table | 9: vehicle
+# 5: person | 6: plant | 7: pothole | 8: stairs | 9: table | 10: vehicle
 # =================================================================
 CLASS_NAMES = [name.strip() for name in os.getenv("AI_CLASS_NAMES", "").split(",") if name.strip()]
 if not CLASS_NAMES:
@@ -34,11 +34,12 @@ if not CLASS_NAMES:
         "Hang rao",    # 2: fence
         "Thung rac",   # 3: garbage_bin
         "Vat can",     # 4: obstacle
-        "Cay coi",     # 5: plant
-        "O ga",        # 6: pothole
-        "Cau thang",   # 7: stairs
-        "Ban",         # 8: table
-        "Xe co",       # 9: vehicle
+        "Nguoi",       # 5: person
+        "Cay coi",     # 6: plant
+        "O ga",        # 7: pothole
+        "Cau thang",   # 8: stairs
+        "Ban",         # 9: table
+        "Xe co",       # 10: vehicle
     ]
 
 # Danh sách gốc tương ứng với thứ tự file âm thanh MP3 trên thẻ nhớ của gậy
